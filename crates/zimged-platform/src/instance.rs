@@ -43,6 +43,14 @@ pub trait SingleInstance: Send + Sync {
     fn set_wake(&self, wake: Box<dyn Fn() + Send + Sync>);
     /// What arrived since the last call, oldest first.
     fn take_arrivals(&self) -> Vec<Arrival>;
+
+    /// Register the OS's own file-open delivery against this instance's inbox. On macOS a file
+    /// opened from Finder ("Open With", a double-click, `open -a`) is delivered as a
+    /// `kAEOpenDocuments` Apple Event, never in `argv` (§8.5); this makes it arrive as an
+    /// [`Arrival`] exactly like a single-instance hand-off, so the app's per-frame drain opens it
+    /// with no new path. A no-op on Linux and Windows, where the launch path is in `argv`. Call
+    /// once, on the main thread, after the window and NSApplication exist.
+    fn install_open_event_source(&self) {}
 }
 
 /// Arrivals waiting for the app, and how to wake it. Shared by the real adapter and the fake.
@@ -68,6 +76,20 @@ impl Inbox {
         std::mem::take(&mut *self.arrivals.lock().expect("inbox"))
     }
 }
+
+/// The [`Arrival`] a macOS `kAEOpenDocuments` Apple Event's file list becomes: the first file,
+/// opened as the new Image. zimged shows one image at a time, so any further files are dropped,
+/// matching a multi-file drop (§4.6). An empty list yields nothing to open.
+// Only [`apple_events`] calls this, but the test covers it on every platform.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn open_arrival(paths: Vec<PathBuf>) -> Option<Arrival> {
+    paths.into_iter().next().map(Arrival::Open)
+}
+
+/// macOS delivers a file opened from Finder through an Apple Event, never in `argv`; this module
+/// registers the handler that turns it into an [`Arrival`]. Compiled only on macOS.
+#[cfg(target_os = "macos")]
+mod apple_events;
 
 // ---- The real adapter ----
 
@@ -237,6 +259,11 @@ impl SingleInstance for LocalSocketInstance {
     fn take_arrivals(&self) -> Vec<Arrival> {
         self.inbox.take()
     }
+
+    #[cfg(target_os = "macos")]
+    fn install_open_event_source(&self) {
+        apple_events::install(self.inbox.clone());
+    }
 }
 
 /// Read one message and answer it. `None` for anything malformed (no answer is sent).
@@ -360,5 +387,24 @@ impl SingleInstance for MemoryInstance {
 
     fn take_arrivals(&self) -> Vec<Arrival> {
         self.inbox.take()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_arrival_opens_the_first_file_and_ignores_the_rest() {
+        assert_eq!(open_arrival(vec![]), None);
+        assert_eq!(
+            open_arrival(vec![PathBuf::from("/a.png")]),
+            Some(Arrival::Open(PathBuf::from("/a.png"))),
+        );
+        // A multi-file open keeps only the first, like a multi-file drop (§4.6).
+        assert_eq!(
+            open_arrival(vec![PathBuf::from("/a.png"), PathBuf::from("/b.png")]),
+            Some(Arrival::Open(PathBuf::from("/a.png"))),
+        );
     }
 }
