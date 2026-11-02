@@ -4797,7 +4797,7 @@ dependencies = [
 
 [[package]]
 name = "zimged"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "eframe",
  "egui",
@@ -4815,7 +4815,7 @@ dependencies = [
 
 [[package]]
 name = "zimged-codec"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "fast_image_resize",
  "image",
@@ -4827,7 +4827,7 @@ dependencies = [
 
 [[package]]
 name = "zimged-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -4835,7 +4835,7 @@ dependencies = [
 
 [[package]]
 name = "zimged-platform"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "clipboard-rs",
  "directories",
@@ -4852,7 +4852,7 @@ dependencies = [
 
 [[package]]
 name = "zimged-render"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "epaint_default_fonts",
  "skia-safe",
@@ -4861,7 +4861,7 @@ dependencies = [
 
 [[package]]
 name = "zimged-siblings"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "icu_collator",
  "icu_locale_core",
