@@ -189,10 +189,11 @@ jobs:
       - name: Build lecoq
         # .cargo/config.toml links the C runtime statically (+crt-static, #52). libdav1d-sys runs
         # meson without -Db_vscrt, so dav1d would build /MD; meson puts CFLAGS after its own flags,
-        # and cl.exe takes the last of /MD and /MT.
+        # and cl.exe takes the last of /MD and /MT. Spelled -MT: Git Bash would turn "/MT" into a
+        # Windows path.
         env:
-          CFLAGS: /MT
-          CXXFLAGS: /MT
+          CFLAGS: -MT
+          CXXFLAGS: -MT
         run: cargo build --release --locked -p lecoq --features avif
 
       - name: Check that the C runtime is linked statically

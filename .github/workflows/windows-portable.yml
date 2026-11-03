@@ -44,10 +44,10 @@ jobs:
           echo 'C:\Program Files\NASM' >> "${GITHUB_PATH}"
 
       - name: Build lecoq
-        # See release.yml: CFLAGS=/MT makes dav1d's meson build follow +crt-static.
+        # See release.yml: CFLAGS=-MT makes dav1d's meson build follow +crt-static.
         env:
-          CFLAGS: /MT
-          CXXFLAGS: /MT
+          CFLAGS: -MT
+          CXXFLAGS: -MT
         run: cargo build --release --locked -p lecoq --features avif
 
       - name: Check that the C runtime is linked statically
