@@ -45,15 +45,22 @@ i5-12600KF under Wayland, against a budget of 150 ms at p90. See `tools/bench`.
 
 Packages are attached to each [GitHub release](https://github.com/acastaner/lecoq/releases).
 
-- **Linux:** `.deb`, `.rpm`, a tarball, an AUR PKGBUILD and a Flatpak bundle. One binary runs
-  natively on Wayland and X11, on any distribution with glibc 2.36 or later (Debian 12, Ubuntu
-  23.04, Fedora 37 and newer).
-- **Windows 10+:** an MSI and a winget manifest. The MSI is unsigned, so SmartScreen may warn.
+- **Linux:** `.deb`, `.rpm`, a tarball, an AUR PKGBUILD, a Flatpak bundle and an AppImage. One
+  binary runs natively on Wayland and X11, on any distribution with glibc 2.36 or later (Debian
+  12, Ubuntu 23.04, Fedora 37 and newer).
+- **Windows 10+:** an MSI, a winget manifest and a portable zip. They are unsigned, so SmartScreen
+  may warn.
 - **macOS (Apple silicon and Intel):** `lecoq.app` in a DMG, ad-hoc signed and not notarised.
   Right-click › Open the first time.
 
 lecoq registers under *Open with* for every format it reads and never makes itself the default
 viewer.
+
+**Portable:** unzip the Windows portable zip anywhere. While `portable.txt` sits next to
+`lecoq.exe`, the settings stay in a `config` folder beside it. The AppImage keeps them in a
+`lecoq-X.Y.Z-x86_64.AppImage.config` folder next to it, if there is one: create it, or run the
+AppImage once with `--appimage-portable-config`.
+Neither registers lecoq under *Open with*.
 
 Windows and macOS builds are best-effort: they aren't tested, and the performance budgets apply
 only to Linux.

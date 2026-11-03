@@ -1,0 +1,2 @@
+# Shipped as is in the Windows portable zip (#52): keep its CRLF line ending.
+packaging/windows/portable.txt -text

@@ -27,7 +27,8 @@ pub trait ConfigStore: Send + Sync {
 
 /// `config.toml` in the OS's user-config directory, resolved with `directories`:
 /// `$XDG_CONFIG_HOME/lecoq/` (default `~/.config/lecoq/`), `%APPDATA%\lecoq\`, or
-/// `~/Library/Application Support/lecoq/`. See [`OsConfigStore::in_config_dir`] for the copy of
+/// `~/Library/Application Support/lecoq/`; in portable mode, a `config/` folder next to the
+/// executable ([`OsConfigStore::locate`]). See [`OsConfigStore::in_config_dir`] for the copy of
 /// an older zimged config.
 pub struct OsConfigStore {
     path: Option<PathBuf>,
@@ -35,8 +36,23 @@ pub struct OsConfigStore {
 
 impl OsConfigStore {
     pub fn new() -> Self {
-        match directories::BaseDirs::new() {
-            Some(dirs) => Self::in_config_dir(dirs.config_dir()),
+        let exe_dir = std::env::current_exe()
+            .and_then(std::fs::canonicalize)
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        let dirs = directories::BaseDirs::new();
+        Self::locate(exe_dir.as_deref(), dirs.as_ref().map(|d| d.config_dir()))
+    }
+
+    /// The store for the executable in `exe_dir`, with `config_dir` the OS's user-config directory.
+    /// A `portable.txt` next to the executable is portable mode (#52): `config.toml` lives in a
+    /// `config/` folder beside it. Otherwise it is [`Self::in_config_dir`].
+    pub fn locate(exe_dir: Option<&Path>, config_dir: Option<&Path>) -> Self {
+        if let Some(exe_dir) = exe_dir.filter(|dir| dir.join("portable.txt").is_file()) {
+            return Self::at(exe_dir.join("config").join("config.toml"));
+        }
+        match config_dir {
+            Some(base) => Self::in_config_dir(base),
             None => Self { path: None },
         }
     }

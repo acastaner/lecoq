@@ -9,12 +9,13 @@ that the local gate (`tools/local-ci/`) never passed.
 | `linux/lecoq.desktop` | The desktop entry. `MimeType=` lists every format lecoq reads (§5.1) |
 | `linux/lecoq.svg` | The icon (hicolor, scalable) |
 | `linux/io.github.acastaner.lecoq.metainfo.xml` | AppStream metadata. Needs a `<release>` for each version |
-| `linux/build.sh` | Builds the tarball, `.deb`, `.rpm`, AUR files and Flatpak staging from a built binary |
+| `linux/build.sh` | Builds the tarball, `.deb`, `.rpm`, AUR files, Flatpak staging and AppImage from a built binary |
 | `aur/PKGBUILD.in`, `aur/.SRCINFO.in` | AUR templates (a source build of the tag); `build.sh pkgbuild` fills in version and hash |
 | `flatpak/io.github.acastaner.lecoq.yml` | Flatpak manifest; repackages the tarball's binary |
 | `windows/lecoq.wxs` | WiX v3 source for the MSI (cargo-wix): ProgIDs and *Open with* entries per extension |
 | `windows/winget/*.yaml` | winget manifest templates; the release fills in the version and the MSI's hash |
-| `windows/build.sh` | Builds the MSI and the winget manifest from a built binary (Git Bash on Windows) |
+| `windows/build.sh` | Builds the MSI, the winget manifest and the portable zip from a built binary (Git Bash on Windows) |
+| `windows/portable.txt` | The portable zip's marker: next to `lecoq.exe`, it keeps the settings in `config\` beside it |
 | `windows/lecoq.ico`, `macos/lecoq.icns` | Icons rendered from `linux/lecoq.svg` by `make_icons.py` (committed) |
 | `macos/Info.plist` | The app's Info.plist: `CFBundleDocumentTypes` for every readable format, rank Alternate |
 | `macos/build.sh` | Builds the ad-hoc-signed `lecoq.app` and its DMG from a built binary (macOS) |
@@ -33,6 +34,20 @@ The MSI writes ProgIDs, `OpenWithProgids`, `Applications\lecoq.exe\SupportedType
 Programs capabilities, never an extension key's default value (so no WiX `<ProgId>`/`<Extension>`).
 The macOS document types are `LSHandlerRank` `Alternate`. `check_associations.py`, run by the
 release's `gate-record` job, enforces both, and that every package lists the same formats.
+
+## Portable builds
+
+Two artifacts run from any folder and register nothing (§8.3, §8.5):
+
+- **Windows:** `lecoq-X.Y.Z-x86_64-windows-portable.zip`. It holds `lecoq.exe`, `LICENSE.txt` and
+  `portable.txt`. While `portable.txt` sits next to the exe, `config.toml` lives in a `config\`
+  folder beside it. `.cargo/config.toml` links the C runtime statically, so the exe needs no
+  Visual C++ Redistributable. The release's `windows` job checks this with `dumpbin`.
+- **Linux:** `lecoq-X.Y.Z-x86_64.AppImage`, packed by `build.sh appimage` with `appimagetool` and
+  its runtime (both pinned by SHA-256 in `build.sh`). Like the tarball it bundles no libraries and
+  needs glibc 2.36 or later. For portable settings, run it once with `--appimage-portable-config`,
+  or create `lecoq-X.Y.Z-x86_64.AppImage.config/` next to it: the runtime then sets
+  `XDG_CONFIG_HOME` to that folder.
 
 A new readable format goes in `READ_EXTENSIONS`, the desktop file, the metainfo, `lecoq.wxs`'s
 `Extensions`, `Info.plist` and the winget installer manifest.

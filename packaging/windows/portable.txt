@@ -1,0 +1,1 @@
+This file makes lecoq portable: while it sits next to lecoq.exe, lecoq keeps its settings in the "config" folder beside it. Delete it to keep them in %APPDATA%\lecoq\ instead.
