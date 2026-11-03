@@ -1,0 +1,117 @@
+{
+ "bench": "cold",
+ "image": "/home/acastaner/Git/zimged/tools/bench/images/IMG_0001.jpg",
+ "binary": "/home/acastaner/Git/zimged/target/release/zimged",
+ "session": "wayland",
+ "power_profile": "balanced",
+ "cpu": "12th Gen Intel(R) Core(TM) i5-12600KF",
+ "runs": 15,
+ "idle_s": 1.5,
+ "summary": {
+  "p50": 108.54,
+  "p90": 123.78,
+  "max": 373.59,
+  "min": 100.44,
+  "phases_median": {
+   "main": 9.1,
+   "renderer_ready": 104.91,
+   "decoded": 90.1,
+   "first_image_painted": 108.54
+  },
+  "failed_runs": 0,
+  "budget_p90_ms": 150.0,
+  "within_budget": true
+ },
+ "marks": [
+  {
+   "main": 14.48,
+   "decoded": 155.2,
+   "renderer_ready": 368.66,
+   "first_image_painted": 373.59
+  },
+  {
+   "main": 8.51,
+   "decoded": 96.73,
+   "renderer_ready": 102.31,
+   "first_image_painted": 105.94
+  },
+  {
+   "main": 6.91,
+   "decoded": 74.22,
+   "renderer_ready": 102.89,
+   "first_image_painted": 106.66
+  },
+  {
+   "main": 9.22,
+   "decoded": 96.48,
+   "renderer_ready": 115.1,
+   "first_image_painted": 119.16
+  },
+  {
+   "main": 9.14,
+   "decoded": 92.47,
+   "renderer_ready": 120.24,
+   "first_image_painted": 123.78
+  },
+  {
+   "main": 9.32,
+   "decoded": 92.58,
+   "renderer_ready": 109.39,
+   "first_image_painted": 113.07
+  },
+  {
+   "main": 7.9,
+   "decoded": 85.49,
+   "renderer_ready": 102.74,
+   "first_image_painted": 106.25
+  },
+  {
+   "main": 9.11,
+   "decoded": 86.98,
+   "renderer_ready": 104.27,
+   "first_image_painted": 107.8
+  },
+  {
+   "main": 10.18,
+   "decoded": 99.19,
+   "renderer_ready": 107.37,
+   "first_image_painted": 110.93
+  },
+  {
+   "main": 9.21,
+   "decoded": 90.1,
+   "renderer_ready": 96.69,
+   "first_image_painted": 100.44
+  },
+  {
+   "main": 8.64,
+   "decoded": 85.74,
+   "renderer_ready": 102.12,
+   "first_image_painted": 105.71
+  },
+  {
+   "main": 9.1,
+   "decoded": 96.54,
+   "renderer_ready": 104.91,
+   "first_image_painted": 108.54
+  },
+  {
+   "main": 2.74,
+   "decoded": 76.82,
+   "renderer_ready": 104.17,
+   "first_image_painted": 107.77
+  },
+  {
+   "main": 8.07,
+   "decoded": 84.5,
+   "renderer_ready": 109.34,
+   "first_image_painted": 112.93
+  },
+  {
+   "main": 7.87,
+   "decoded": 84.21,
+   "renderer_ready": 112.95,
+   "first_image_painted": 116.51
+  }
+ ]
+}
