@@ -4,7 +4,7 @@ While the Image is zoomed past Fit (larger than the canvas), a plain scroll pans
 
 This makes the trackpad-native gesture (a two-finger scroll) pan a zoomed Image, which is what a laptop user reaches for: a MacBook trackpad has no middle button, and a two-finger scroll is how every other app pans. The routing lives in the pan gesture module alongside Space+drag, middle-drag and Shift+wheel.
 
-Decided in [Scroll-to-pan a zoomed Image](https://github.com/acastaner/zimged/issues/50), part of the [Improve annotation UX](https://github.com/acastaner/zimged/issues/47) epic.
+Decided in [Scroll-to-pan a zoomed Image](https://github.com/acastaner/lecoq/issues/50), part of the [Improve annotation UX](https://github.com/acastaner/lecoq/issues/47) epic.
 
 ## Considered Options
 

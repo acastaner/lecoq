@@ -1839,6 +1839,86 @@ dependencies = [
 ]
 
 [[package]]
+name = "lecoq"
+version = "0.1.6"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_kittest",
+ "image",
+ "lecoq-codec",
+ "lecoq-core",
+ "lecoq-platform",
+ "lecoq-render",
+ "lecoq-siblings",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "lecoq-codec"
+version = "0.1.6"
+dependencies = [
+ "fast_image_resize",
+ "image",
+ "lcms2",
+ "libavif-sys",
+ "tempfile",
+ "webp",
+]
+
+[[package]]
+name = "lecoq-core"
+version = "0.1.6"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "lecoq-platform"
+version = "0.1.6"
+dependencies = [
+ "clipboard-rs",
+ "directories",
+ "interprocess",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "pollster",
+ "rfd",
+ "serde",
+ "tempfile",
+ "toml",
+ "trash",
+]
+
+[[package]]
+name = "lecoq-render"
+version = "0.1.6"
+dependencies = [
+ "epaint_default_fonts",
+ "lecoq-core",
+ "skia-safe",
+]
+
+[[package]]
+name = "lecoq-siblings"
+version = "0.1.6"
+dependencies = [
+ "icu_collator",
+ "icu_locale_core",
+ "lecoq-codec",
+ "libc",
+ "notify",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "unicode-normalization",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "libavif-sys"
 version = "0.17.0+libavif.1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4793,86 +4873,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
-]
-
-[[package]]
-name = "zimged"
-version = "0.1.6"
-dependencies = [
- "eframe",
- "egui",
- "egui_kittest",
- "image",
- "serde_json",
- "tempfile",
- "toml",
- "zimged-codec",
- "zimged-core",
- "zimged-platform",
- "zimged-render",
- "zimged-siblings",
-]
-
-[[package]]
-name = "zimged-codec"
-version = "0.1.6"
-dependencies = [
- "fast_image_resize",
- "image",
- "lcms2",
- "libavif-sys",
- "tempfile",
- "webp",
-]
-
-[[package]]
-name = "zimged-core"
-version = "0.1.6"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "zimged-platform"
-version = "0.1.6"
-dependencies = [
- "clipboard-rs",
- "directories",
- "interprocess",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "pollster",
- "rfd",
- "serde",
- "tempfile",
- "toml",
- "trash",
-]
-
-[[package]]
-name = "zimged-render"
-version = "0.1.6"
-dependencies = [
- "epaint_default_fonts",
- "skia-safe",
- "zimged-core",
-]
-
-[[package]]
-name = "zimged-siblings"
-version = "0.1.6"
-dependencies = [
- "icu_collator",
- "icu_locale_core",
- "libc",
- "notify",
- "objc2 0.6.5",
- "objc2-foundation 0.3.2",
- "unicode-normalization",
- "windows 0.62.2",
- "zimged-codec",
 ]
 
 [[package]]

@@ -1,32 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  zimged.app's Info.plist (#42, spec §8.5). packaging/macos/build.sh replaces @VERSION@.
+  lecoq.app's Info.plist (#42, spec §8.5). packaging/macos/build.sh replaces @VERSION@.
 
-  CFBundleDocumentTypes covers every format zimged reads (spec §5.1). LSHandlerRank Alternate makes
-  zimged a secondary handler: it appears under Open With, and Launch Services never picks it as the
+  CFBundleDocumentTypes covers every format lecoq reads (spec §5.1). LSHandlerRank Alternate makes
+  lecoq a secondary handler: it appears under Open With, and Launch Services never picks it as the
   default; the user chooses. WebP and AVIF are also imported (UTImportedTypeDeclarations) for macOS
   versions that don't declare them; where the system declares them, its declaration wins.
 
   A new readable format: add its UTI (and extensions) here, and see the comment in
-  packaging/windows/zimged.wxs.
+  packaging/windows/lecoq.wxs.
 -->
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>zimged</string>
+  <string>lecoq</string>
   <key>CFBundleExecutable</key>
-  <string>zimged</string>
+  <string>lecoq</string>
   <key>CFBundleIconFile</key>
-  <string>zimged</string>
+  <string>lecoq</string>
   <key>CFBundleIdentifier</key>
-  <string>io.github.acastaner.zimged</string>
+  <string>io.github.acastaner.lecoq</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>zimged</string>
+  <string>lecoq</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

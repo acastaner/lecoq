@@ -7,15 +7,15 @@ version = "0.1.6"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/acastaner/zimged"
+repository = "https://github.com/acastaner/lecoq"
 publish = false
 
 [workspace.dependencies]
-zimged-core = { path = "crates/zimged-core" }
-zimged-render = { path = "crates/zimged-render" }
-zimged-codec = { path = "crates/zimged-codec" }
-zimged-siblings = { path = "crates/zimged-siblings" }
-zimged-platform = { path = "crates/zimged-platform" }
+lecoq-core = { path = "crates/lecoq-core" }
+lecoq-render = { path = "crates/lecoq-render" }
+lecoq-codec = { path = "crates/lecoq-codec" }
+lecoq-siblings = { path = "crates/lecoq-siblings" }
+lecoq-platform = { path = "crates/lecoq-platform" }
 
 eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "accesskit"] }
 egui = "0.37"
@@ -38,7 +38,7 @@ serde_json = "1"
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 pollster = "0.4"
 interprocess = { version = "2.4", default-features = false }
-# The system trash (§8.2). chrono is only for listing the trash, which zimged never does.
+# The system trash (§8.2). chrono is only for listing the trash, which lecoq never does.
 trash = { version = "5", default-features = false, features = ["coinit_apartmentthreaded"] }
 tempfile = "3"
 # The clipboard (§8.1): clipboard-rs on Windows, macOS and X11; its `wayland` backend is

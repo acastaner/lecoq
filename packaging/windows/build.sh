@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# zimged -- build the Windows release artifacts (#42, spec §8.5) from an already-built binary.
+# lecoq -- build the Windows release artifacts (#42, spec §8.5) from an already-built binary.
 #
 # Usage: packaging/windows/build.sh <out-dir> <artifact>...
 #
-#   msi       <out>/zimged-<ver>-x86_64.msi (cargo wix --no-build, packaging/windows/zimged.wxs)
-#   winget    <out>/winget/acastaner.zimged*.yaml: the winget manifest for that MSI (needs `msi`
+#   msi       <out>/lecoq-<ver>-x86_64.msi (cargo wix --no-build, packaging/windows/lecoq.wxs)
+#   winget    <out>/winget/acastaner.lecoq*.yaml: the winget manifest for that MSI (needs `msi`
 #             first); submit it to microsoft/winget-pkgs by hand
 #
 # Runs in Git Bash on Windows (the release workflow's `windows` job), with the WiX Toolset v3 and
-# cargo-wix installed. It never builds zimged: run
-# `cargo build --release --locked -p zimged --features avif` first. The version is the workspace
-# version in Cargo.toml. The MSI adds zimged to *Open with* and never makes it the default handler
-# (spec §8.5; see the comment in zimged.wxs).
+# cargo-wix installed. It never builds lecoq: run
+# `cargo build --release --locked -p lecoq --features avif` first. The version is the workspace
+# version in Cargo.toml. The MSI adds lecoq to *Open with* and never makes it the default handler
+# (spec §8.5; see the comment in lecoq.wxs).
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 here="${root}/packaging/windows"
@@ -28,18 +28,18 @@ out="$(cd "${out}" && pwd)"
 
 version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
 [[ -n "${version}" ]] || { echo "ERROR: no version in Cargo.toml's [workspace.package]." >&2; exit 1; }
-msi="${out}/zimged-${version}-x86_64.msi"
+msi="${out}/lecoq-${version}-x86_64.msi"
 
 # WiX and cargo-wix want Windows paths; elsewhere (a dry run of `winget`) keep them as they are.
 winpath() { if command -v cygpath > /dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
 build_msi() {
-  [[ -f "${root}/target/release/zimged.exe" ]] || {
-    echo "ERROR: target/release/zimged.exe is missing: run cargo build --release --locked -p zimged --features avif first." >&2
+  [[ -f "${root}/target/release/lecoq.exe" ]] || {
+    echo "ERROR: target/release/lecoq.exe is missing: run cargo build --release --locked -p lecoq --features avif first." >&2
     exit 1
   }
-  cargo wix --package zimged --no-build --nocapture \
-    --include "$(winpath "${here}/zimged.wxs")" \
+  cargo wix --package lecoq --no-build --nocapture \
+    --include "$(winpath "${here}/lecoq.wxs")" \
     --compiler-arg "-dRepoDir=$(winpath "${root}")" \
     --output "$(winpath "${msi}")"
   echo "${msi}"

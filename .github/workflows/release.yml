@@ -1,4 +1,4 @@
-# zimged release (#41, spec §8.5 and §9).
+# lecoq release (#41, spec §8.5 and §9).
 #
 # A pushed tag vX.Y.Z builds the release artifacts and publishes a GitHub release. GitHub runs no
 # tests: the gate runs on the maintainer's machine (tools/local-ci/run.sh) and records a pass as a
@@ -6,7 +6,7 @@
 # other job needs it. See packaging/README.md for the release checklist.
 #
 # Linux: tarball, .deb, .rpm, AUR PKGBUILD and a Flatpak bundle. Windows (#42): an MSI and a
-# winget manifest. macOS (#42): an ad-hoc-signed zimged.app in a DMG, for arm64 and x64.
+# winget manifest. macOS (#42): an ad-hoc-signed lecoq.app in a DMG, for arm64 and x64.
 name: release
 
 on:
@@ -55,8 +55,8 @@ jobs:
             echo "::error::tag ${TAG} does not match the workspace version ${version} in Cargo.toml."
             exit 1
           fi
-          if ! grep -q "<release version=\"${version}\"" packaging/linux/io.github.acastaner.zimged.metainfo.xml; then
-            echo "::error::packaging/linux/io.github.acastaner.zimged.metainfo.xml has no <release version=\"${version}\">."
+          if ! grep -q "<release version=\"${version}\"" packaging/linux/io.github.acastaner.lecoq.metainfo.xml; then
+            echo "::error::packaging/linux/io.github.acastaner.lecoq.metainfo.xml has no <release version=\"${version}\">."
             exit 1
           fi
           python3 packaging/release_notes.py "${version}" > /dev/null
@@ -64,7 +64,7 @@ jobs:
           echo "rust=${rust}" >> "${GITHUB_OUTPUT}"
 
       - name: Check the file associations
-        # Every package lists exactly the formats zimged reads, and none makes it the default.
+        # Every package lists exactly the formats lecoq reads, and none makes it the default.
         run: python3 packaging/check_associations.py
 
   linux:
@@ -101,8 +101,8 @@ jobs:
       - name: Install the packagers
         run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.1
 
-      - name: Build zimged
-        run: cargo build --release --locked -p zimged --features avif
+      - name: Build lecoq
+        run: cargo build --release --locked -p lecoq --features avif
 
       - name: Fetch the tag's source archive for the PKGBUILD
         env:
@@ -136,15 +136,15 @@ jobs:
 
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          manifest-path: dist/flatpak/io.github.acastaner.zimged.yml
-          bundle: zimged-${{ needs.gate-record.outputs.version }}-x86_64.flatpak
+          manifest-path: dist/flatpak/io.github.acastaner.lecoq.yml
+          bundle: lecoq-${{ needs.gate-record.outputs.version }}-x86_64.flatpak
           cache: false
           upload-artifact: false
 
       - uses: actions/upload-artifact@v4
         with:
           name: flatpak
-          path: zimged-${{ needs.gate-record.outputs.version }}-x86_64.flatpak
+          path: lecoq-${{ needs.gate-record.outputs.version }}-x86_64.flatpak
           if-no-files-found: error
 
   windows:
@@ -185,8 +185,8 @@ jobs:
           fi
           cargo install --locked cargo-wix@0.3.9
 
-      - name: Build zimged
-        run: cargo build --release --locked -p zimged --features avif
+      - name: Build lecoq
+        run: cargo build --release --locked -p lecoq --features avif
 
       - name: Package
         run: packaging/windows/build.sh dist msi winget
@@ -226,8 +226,8 @@ jobs:
         # meson, ninja and nasm for libavif and dav1d (#19); cmake is on the image.
         run: brew install meson ninja nasm
 
-      - name: Build zimged
-        run: cargo build --release --locked -p zimged --features avif
+      - name: Build lecoq
+        run: cargo build --release --locked -p lecoq --features avif
 
       - name: Package
         run: packaging/macos/build.sh dist
@@ -260,9 +260,9 @@ jobs:
           cp artifacts/linux/*.tar.gz artifacts/linux/*.deb artifacts/linux/*.rpm assets/
           cp artifacts/flatpak/*.flatpak assets/
           tar --owner=0 --group=0 --numeric-owner -C artifacts/linux/aur \
-            -czf "assets/zimged-${VERSION}-aur.tar.gz" PKGBUILD .SRCINFO
+            -czf "assets/lecoq-${VERSION}-aur.tar.gz" PKGBUILD .SRCINFO
           cp artifacts/windows/*.msi assets/
-          zip -j -X "assets/zimged-${VERSION}-winget.zip" artifacts/windows/winget/*.yaml
+          zip -j -X "assets/lecoq-${VERSION}-winget.zip" artifacts/windows/winget/*.yaml
           cp artifacts/macos-arm64/*.dmg artifacts/macos-x64/*.dmg assets/
           (cd assets && sha256sum -- * > SHA256SUMS)
           ls -l assets
@@ -275,4 +275,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${TAG}" assets/* --verify-tag \
-            --title "zimged ${VERSION}" --notes-file "${RUNNER_TEMP}/notes.md"
+            --title "lecoq ${VERSION}" --notes-file "${RUNNER_TEMP}/notes.md"

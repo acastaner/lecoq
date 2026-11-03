@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# zimged -- build the Linux release artifacts (#41, spec §8.5) from an already-built binary.
+# lecoq -- build the Linux release artifacts (#41, spec §8.5) from an already-built binary.
 #
 # Usage: packaging/linux/build.sh <out-dir> <artifact>...
 #
-#   tarball            <out>/zimged-<ver>-<arch>-linux.tar.gz (bin/ and share/, a /usr-style tree)
-#   deb                <out>/zimged_<ver>-1_<debarch>.deb      (cargo-deb --no-build)
-#   rpm                <out>/zimged-<ver>-1.<arch>.rpm          (cargo generate-rpm)
+#   tarball            <out>/lecoq-<ver>-<arch>-linux.tar.gz (bin/ and share/, a /usr-style tree)
+#   deb                <out>/lecoq_<ver>-1_<debarch>.deb      (cargo-deb --no-build)
+#   rpm                <out>/lecoq-<ver>-1.<arch>.rpm          (cargo generate-rpm)
 #   pkgbuild <archive> <out>/aur/PKGBUILD and .SRCINFO, for the source <archive> (GitHub's tag
-#                      tarball, zimged-<ver>/...); it is only hashed here, never unpacked
+#                      tarball, lecoq-<ver>/...); it is only hashed here, never unpacked
 #   flatpak            <out>/flatpak/: the manifest and the tarball it packages (needs `tarball`
 #                      first), for flatpak-builder
 #
-# Run from anywhere; it works in the repository root. It never builds zimged: run
-# `cargo build --release --locked -p zimged --features avif` first. The version is the workspace
-# version in Cargo.toml. Nothing here registers zimged as a *default* handler (spec §8.5).
+# Run from anywhere; it works in the repository root. It never builds lecoq: run
+# `cargo build --release --locked -p lecoq --features avif` first. The version is the workspace
+# version in Cargo.toml. Nothing here registers lecoq as a *default* handler (spec §8.5).
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 here="${root}/packaging/linux"
@@ -31,25 +31,25 @@ out="$(cd "${out}" && pwd)"
 version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
 [[ -n "${version}" ]] || { echo "ERROR: no version in Cargo.toml's [workspace.package]." >&2; exit 1; }
 arch="$(uname -m)"
-binary="${root}/target/release/zimged"
+binary="${root}/target/release/lecoq"
 
 need_binary() {
   [[ -x "${binary}" ]] || {
-    echo "ERROR: ${binary} is missing: run cargo build --release --locked -p zimged --features avif first." >&2
+    echo "ERROR: ${binary} is missing: run cargo build --release --locked -p lecoq --features avif first." >&2
     exit 1
   }
 }
 
 build_tarball() {
   need_binary
-  local name="zimged-${version}-${arch}-linux" stage
+  local name="lecoq-${version}-${arch}-linux" stage
   stage="$(mktemp -d)"
   local t="${stage}/${name}"
-  install -Dm755 "${binary}" "${t}/bin/zimged"
-  install -Dm644 "${here}/zimged.desktop" "${t}/share/applications/zimged.desktop"
-  install -Dm644 "${here}/zimged.svg" "${t}/share/icons/hicolor/scalable/apps/zimged.svg"
-  install -Dm644 "${here}/io.github.acastaner.zimged.metainfo.xml" \
-    "${t}/share/metainfo/io.github.acastaner.zimged.metainfo.xml"
+  install -Dm755 "${binary}" "${t}/bin/lecoq"
+  install -Dm644 "${here}/lecoq.desktop" "${t}/share/applications/lecoq.desktop"
+  install -Dm644 "${here}/lecoq.svg" "${t}/share/icons/hicolor/scalable/apps/lecoq.svg"
+  install -Dm644 "${here}/io.github.acastaner.lecoq.metainfo.xml" \
+    "${t}/share/metainfo/io.github.acastaner.lecoq.metainfo.xml"
   install -Dm644 LICENSE "${t}/LICENSE"
   # Reproducible-ish: fixed owner, sorted names, mtimes clamped to the commit time when known.
   local mtime
@@ -62,14 +62,14 @@ build_tarball() {
 
 build_deb() {
   need_binary
-  cargo deb -p zimged --no-build --locked --output "${out}" >/dev/null
-  ls "${out}"/zimged_"${version}"*.deb
+  cargo deb -p lecoq --no-build --locked --output "${out}" >/dev/null
+  ls "${out}"/lecoq_"${version}"*.deb
 }
 
 build_rpm() {
   need_binary
-  cargo generate-rpm -p crates/zimged --output "${out}" >/dev/null
-  ls "${out}"/zimged-"${version}"*.rpm
+  cargo generate-rpm -p crates/lecoq --output "${out}" >/dev/null
+  ls "${out}"/lecoq-"${version}"*.rpm
 }
 
 build_pkgbuild() {
@@ -87,12 +87,12 @@ build_pkgbuild() {
 }
 
 build_flatpak() {
-  local tarball="${out}/zimged-${version}-${arch}-linux.tar.gz"
+  local tarball="${out}/lecoq-${version}-${arch}-linux.tar.gz"
   [[ -f "${tarball}" ]] || { echo "ERROR: build the tarball first (${tarball})." >&2; exit 1; }
   mkdir -p "${out}/flatpak"
-  cp "${root}/packaging/flatpak/io.github.acastaner.zimged.yml" "${out}/flatpak/"
-  cp "${tarball}" "${out}/flatpak/zimged-linux.tar.gz"
-  echo "${out}/flatpak/io.github.acastaner.zimged.yml"
+  cp "${root}/packaging/flatpak/io.github.acastaner.lecoq.yml" "${out}/flatpak/"
+  cp "${tarball}" "${out}/flatpak/lecoq-linux.tar.gz"
+  echo "${out}/flatpak/io.github.acastaner.lecoq.yml"
 }
 
 while [[ $# -gt 0 ]]; do

@@ -1,0 +1,14 @@
+[package]
+name = "lecoq-render"
+description = "Skia rendering of a lecoq Document: on-screen composite, Flatten, effects, resampling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+lecoq-core.workspace = true
+skia-safe.workspace = true
+epaint_default_fonts.workspace = true

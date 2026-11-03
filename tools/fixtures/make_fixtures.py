@@ -73,7 +73,7 @@ def matrix_profile(name, red, green, blue, gamma=2.2):
 SRGB_R = (0.4361, 0.2225, 0.0139)
 SRGB_G = (0.3851, 0.7169, 0.0971)
 SRGB_B = (0.1431, 0.0606, 0.7141)
-SWAPPED = matrix_profile("Red and green swapped (zimged test)", SRGB_G, SRGB_R, SRGB_B)
+SWAPPED = matrix_profile("Red and green swapped (lecoq test)", SRGB_G, SRGB_R, SRGB_B)
 
 
 def path(name):

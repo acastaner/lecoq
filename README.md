@@ -1,4 +1,7 @@
-# zimged
+# lecoq
+
+*Lire, Éditer, Capturer, Orner et Quadriller*. Le Coq, the rooster. Formerly zimged: it
+was renamed after v0.1.6, and settings from `zimged/config.toml` are picked up on first launch.
 
 A small, very fast image viewer and quick editor. Double-click an image and it is on screen almost
 at once. The wheel or the arrow keys move through the other images in the same folder. Mark an image
@@ -12,7 +15,7 @@ i5-12600KF under Wayland, against a budget of 150 ms at p90. See `tools/bench`.
 - Opens JPEG, PNG, WebP, GIF, BMP, ICO, TIFF and AVIF. Animated GIF and WebP play.
 - The wheel or ←/→ moves to the next or previous image in the folder, in the same order as your
   file manager (Dolphin, GNOME Files, Explorer or Finder). The list follows files added, removed
-  or renamed while zimged is open.
+  or renamed while lecoq is open.
 - Ctrl+wheel or `+`/`-` zooms, `0` fits the image to the window, F11 is fullscreen.
 - Delete moves the file to the system trash and shows the next image.
 - EXIF orientation is applied, and images with an embedded colour profile are converted to sRGB.
@@ -34,22 +37,22 @@ i5-12600KF under Wayland, against a budget of 150 ms at p90. See `tools/bench`.
 - Ctrl+S saves in place, keeping EXIF and the colour profile, through a temporary file and an
   atomic rename. Save As writes PNG, JPEG or WebP.
 - Ctrl+C copies the whole image, or just the selected annotations, which paste back as editable
-  annotations in any zimged window.
+  annotations in any lecoq window.
 - Ctrl+V pastes a clipboard image on top as an inset; in an empty window it opens it as the image.
   Ctrl+drop of a file does the same.
 
 ## Installing
 
-Packages are attached to each [GitHub release](https://github.com/acastaner/zimged/releases).
+Packages are attached to each [GitHub release](https://github.com/acastaner/lecoq/releases).
 
 - **Linux:** `.deb`, `.rpm`, a tarball, an AUR PKGBUILD and a Flatpak bundle. One binary runs
   natively on Wayland and X11, on any distribution with glibc 2.36 or later (Debian 12, Ubuntu
   23.04, Fedora 37 and newer).
 - **Windows 10+:** an MSI and a winget manifest. The MSI is unsigned, so SmartScreen may warn.
-- **macOS (Apple silicon and Intel):** `zimged.app` in a DMG, ad-hoc signed and not notarised.
+- **macOS (Apple silicon and Intel):** `lecoq.app` in a DMG, ad-hoc signed and not notarised.
   Right-click › Open the first time.
 
-zimged registers under *Open with* for every format it reads and never makes itself the default
+lecoq registers under *Open with* for every format it reads and never makes itself the default
 viewer.
 
 Windows and macOS builds are best-effort: they aren't tested, and the performance budgets apply
@@ -61,7 +64,7 @@ HEIC/HEIF, screenshot capture, a preferences dialog and translations.
 
 ## Building
 
-zimged is a Rust workspace; the pinned toolchain in `rust-toolchain.toml` is picked up by `rustup`.
+lecoq is a Rust workspace; the pinned toolchain in `rust-toolchain.toml` is picked up by `rustup`.
 
 ```bash
 cargo build --release

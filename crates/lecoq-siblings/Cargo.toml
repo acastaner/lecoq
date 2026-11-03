@@ -1,0 +1,24 @@
+[package]
+name = "lecoq-siblings"
+description = "Sibling scan, per-platform ordering, directory watcher, prefetch and display-size cache"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+icu_collator.workspace = true
+icu_locale_core.workspace = true
+libc.workspace = true
+notify.workspace = true
+unicode-normalization.workspace = true
+lecoq-codec.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true

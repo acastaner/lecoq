@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""tools/bench: zimged's performance budgets (spec §1.2), descended from the cold-start spike's
-bench.py (branch prototype/startup-spike, acastaner/zimged#9).
+"""tools/bench: lecoq's performance budgets (spec §1.2), descended from the cold-start spike's
+bench.py (branch prototype/startup-spike, acastaner/lecoq#9).
 
 Not part of the gate: it depends on the hardware and the power profile. Run it by hand on the
 reference machine (i5-12600KF, balanced power profile, Wayland) and put the numbers in the release
@@ -11,7 +11,7 @@ notes.
       Keep them out of the repository.
 
   tools/bench/bench.py cold IMAGE [--runs 15] [--idle 1.5] [--x11] [--binary PATH] [--out FILE]
-      Cold start (§1.2): launch zimged on IMAGE `runs` times, each after `idle` seconds of idle,
+      Cold start (§1.2): launch lecoq on IMAGE `runs` times, each after `idle` seconds of idle,
       and time launch -> first image painted. Wayland unless --x11 (XWayland).
 
   tools/bench/bench.py switch DIR [--count 25] [--interval 200] [--x11] [--binary PATH] [--out FILE]
@@ -24,17 +24,17 @@ notes.
       files (IMAGE plus hard links to a small JPEG), and compare. Also reports when the scan of the
       big folder finished (`siblings_scanned`), which happens after the first paint.
 
-The clock starts just before exec (ZIMGED_BENCH_T0_NS) and stops when zimged builds the frame that
+The clock starts just before exec (LECOQ_BENCH_T0_NS) and stops when lecoq builds the frame that
 draws the first image (`first_image_painted`), which eframe paints and hands to the compositor
-straight after; it appears on screen at the next vblank. ZIMGED_BENCH_EXIT=1 makes zimged close
+straight after; it appears on screen at the next vblank. LECOQ_BENCH_EXIT=1 makes lecoq close
 right after. Other marks: main, renderer_ready (window + GL context created), decoded,
-siblings_scanned. ZIMGED_BENCH_NAV=<interval ms>,<count> drives the Sibling switches (`switch_ms`
-lines); with a count of 0 zimged closes as soon as the scan is done.
+siblings_scanned. LECOQ_BENCH_NAV=<interval ms>,<count> drives the Sibling switches (`switch_ms`
+lines); with a count of 0 lecoq closes as soon as the scan is done.
 """
 import argparse, json, os, platform, statistics, subprocess, sys, time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DEFAULT_BINARY = os.path.join(ROOT, "target", "release", "zimged")
+DEFAULT_BINARY = os.path.join(ROOT, "target", "release", "lecoq")
 BUDGET_COLD_P90_MS = 150.0
 BUDGET_SWITCH_P90_MS = 50.0
 # "No later than in a folder of one": p90s within this much of each other count as equal.
@@ -65,13 +65,13 @@ def cpu_model():
 
 
 def launch(binary, image, x11, timeout=30, extra_env=None, switches=None):
-    """Run zimged once; returns its marks. `switch_ms` lines are appended to `switches`."""
+    """Run lecoq once; returns its marks. `switch_ms` lines are appended to `switches`."""
     env = dict(os.environ, LC_ALL="C.UTF-8")
-    env.update(extra_env if extra_env is not None else {"ZIMGED_BENCH_EXIT": "1"})
+    env.update(extra_env if extra_env is not None else {"LECOQ_BENCH_EXIT": "1"})
     if x11:
         env.pop("WAYLAND_DISPLAY", None)
         env["XDG_SESSION_TYPE"] = "x11"
-    env["ZIMGED_BENCH_T0_NS"] = str(time.time_ns())
+    env["LECOQ_BENCH_T0_NS"] = str(time.time_ns())
     try:
         out = subprocess.run([binary, image], env=env, capture_output=True, text=True, timeout=timeout).stdout
     except subprocess.TimeoutExpired as e:  # e.g. the compositor stopped sending frame callbacks
@@ -94,7 +94,7 @@ def launch(binary, image, x11, timeout=30, extra_env=None, switches=None):
 
 def check_binary(args):
     if not os.access(args.binary, os.X_OK):
-        sys.exit(f"no zimged binary at {args.binary}: run `cargo build --release` first")
+        sys.exit(f"no lecoq binary at {args.binary}: run `cargo build --release` first")
 
 
 def session_name(args):
@@ -158,7 +158,7 @@ def cmd_switch(args):
     switches = []
     timeout = 30 + args.count * (args.interval / 1000 + 1)
     m = launch(args.binary, os.path.join(args.dir, images[0]), args.x11, timeout=timeout,
-               extra_env={"ZIMGED_BENCH_NAV": f"{args.interval},{args.count}"}, switches=switches)
+               extra_env={"LECOQ_BENCH_NAV": f"{args.interval},{args.count}"}, switches=switches)
     if not switches:
         sys.exit(f"no switch was timed ({m})")
     for i, ms in enumerate(switches):
@@ -188,7 +188,7 @@ def cmd_folder(args):
     profile = power_profile()
     filler = os.path.join(ROOT, "tests", "fixtures", "small-320x240.jpg")
     name = os.path.basename(args.image)
-    with tempfile.TemporaryDirectory(prefix="zimged-bench-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="lecoq-bench-") as tmp:
         alone, big = os.path.join(tmp, "alone"), os.path.join(tmp, "big")
         os.makedirs(alone)
         os.makedirs(big)
@@ -202,9 +202,9 @@ def cmd_folder(args):
         big_runs, _ = cold_runs(args, os.path.join(big, name), "big  ")
         if not alone_runs or not big_runs:
             sys.exit("a run painted no image")
-        # When does the scan of the big folder finish? (A count of 0 closes zimged once it has.)
+        # When does the scan of the big folder finish? (A count of 0 closes lecoq once it has.)
         time.sleep(args.idle)
-        scan = launch(args.binary, os.path.join(big, name), args.x11, extra_env={"ZIMGED_BENCH_NAV": "0,0"})
+        scan = launch(args.binary, os.path.join(big, name), args.x11, extra_env={"LECOQ_BENCH_NAV": "0,0"})
     a = pct([m["first_image_painted"] for m in alone_runs], 0.9)
     b = pct([m["first_image_painted"] for m in big_runs], 0.9)
     within = b <= a + FOLDER_NOISE_MS

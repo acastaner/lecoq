@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# zimged -- is there a gate record for this commit's tree? (#14, spec §9)
+# lecoq -- is there a gate record for this commit's tree? (#14, spec §9)
 #
 # Usage: ./tools/local-ci/check-gate-record.sh <commit-ish>
 #

@@ -10,7 +10,7 @@
 #
 #   docker build --build-arg RUST_VERSION=<rust-toolchain.toml channel> \
 #                --build-arg GATE_UID="$(id -u)" --build-arg GATE_GID="$(id -g)" \
-#                -t zimged-gate:local - < tools/local-ci/Dockerfile
+#                -t lecoq-gate:local - < tools/local-ci/Dockerfile
 #
 # The Rust version is pinned by rust-toolchain.toml: the launcher reads its channel (through
 # check-toolchain-pin.sh) and passes it in. The suites run cargo through rustup's proxies, which
@@ -25,7 +25,7 @@ FROM rust:${RUST_VERSION}-slim-bookworm
 ARG RUST_VERSION
 # git: the self-test of the guard scripts builds throwaway repositories. cmake, make, g++, meson,
 # ninja and nasm: libavif-sys builds libavif and dav1d from source (the `avif` feature, §5.1).
-# curl, ca-certificates, fontconfig and freetype: skia-bindings (zimged-render, #25) downloads its
+# curl, ca-certificates, fontconfig and freetype: skia-bindings (lecoq-render, #25) downloads its
 # prebuilt Skia with curl at build time and links fontconfig, freetype and libstdc++. fonts-dejavu-core:
 # the text tool tests (#28) need at least one installed font.
 # locales + en_US.UTF-8: the Sibling ordering tables (#15) are measured in that locale (GLib's
@@ -45,7 +45,7 @@ RUN apt-get update \
     && rustup toolchain list && rustc --version
 
 # Cache mount point, owned by the (non-root) user the gate runs as. Docker copies an image
-# directory's ownership into an EMPTY named volume on first mount, so a brand-new zimged-gate-cargo
+# directory's ownership into an EMPTY named volume on first mount, so a brand-new lecoq-gate-cargo
 # volume is writable without ever running as root. It holds only the crates.io registry and the
 # downloaded sources -- never build output, which stays in the clone's target/ and goes with it.
 ARG GATE_UID=1000

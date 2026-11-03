@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# zimged -- the Rust toolchain pin preflight (#14, spec §9).
+# lecoq -- the Rust toolchain pin preflight (#14, spec §9).
 #
 # Usage: ./tools/local-ci/check-toolchain-pin.sh [repo-root] [--rustc "<rustc --version output>"]
 #

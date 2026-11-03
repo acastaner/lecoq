@@ -2,7 +2,7 @@
 
 While a drawing tool is active, a right-click (secondary button, acted on at press) switches back to the Select tool, cancelling any shape that is mid-draw; in Select mode a right-click does nothing. This spends the right mouse button on a quick "escape to Select" gesture rather than on the Annotation context menu that [ADR 0005](0005-scroll-to-pan-a-zoomed-image.md) had reserved it for, because leaving a tool is a far more frequent need than any menu, and until now the only ways back to Select were Esc and the tool strip.
 
-Decided as part of the [Improve annotation UX](https://github.com/acastaner/zimged/issues/47) epic.
+Decided as part of the [Improve annotation UX](https://github.com/acastaner/lecoq/issues/47) epic.
 
 ## Considered Options
 

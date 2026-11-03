@@ -1,0 +1,32 @@
+# lecoq's Flatpak (#41, spec §8.5). Secondary and not budgeted: the sandbox adds launch overhead
+# (spec §1.2). It repackages the release tarball's binary (built in the release workflow's linux
+# job), so the bundle runs exactly the binary of the .deb, .rpm and tarball. packaging/linux/build.sh
+# flatpak stages this file next to that tarball as lecoq-linux.tar.gz.
+id: io.github.acastaner.lecoq
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+command: lecoq
+rename-desktop-file: lecoq.desktop
+rename-icon: lecoq
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # A viewer opens any image, walks its folder for Siblings and saves next to it: a portal-only
+  # sandbox would see the one file and none of its Siblings.
+  - --filesystem=host
+modules:
+  - name: lecoq
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 bin/lecoq /app/bin/lecoq
+      - install -Dm644 share/applications/lecoq.desktop /app/share/applications/lecoq.desktop
+      - install -Dm644 share/icons/hicolor/scalable/apps/lecoq.svg /app/share/icons/hicolor/scalable/apps/lecoq.svg
+      - install -Dm644 share/metainfo/io.github.acastaner.lecoq.metainfo.xml /app/share/metainfo/io.github.acastaner.lecoq.metainfo.xml
+      # The desktop file is renamed to the app id; point the metainfo's launchable at the new name.
+      - sed -i 's|>lecoq.desktop<|>io.github.acastaner.lecoq.desktop<|' /app/share/metainfo/io.github.acastaner.lecoq.metainfo.xml
+    sources:
+      - type: archive
+        path: lecoq-linux.tar.gz

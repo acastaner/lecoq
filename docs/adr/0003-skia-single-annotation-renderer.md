@@ -2,7 +2,7 @@
 
 Annotations are drawn by Skia (`skia-safe`) on the CPU, both on screen (at screen resolution) and when they are Flattened at full resolution for save or copy. egui draws only the window chrome and the selection handles. One renderer keeps the screen identical to the saved file, including highlight and obfuscate, which work live on the pixels beneath them. Skia also has blur, drop shadow, cubic and mipmap resampling, and HarfBuzz text shaping with system fonts built in.
 
-Decided in [Lock the stack](https://github.com/acastaner/zimged/issues/10).
+Decided in [Lock the stack](https://github.com/acastaner/lecoq/issues/10).
 
 ## Considered Options
 

@@ -1,6 +1,6 @@
 # `tools/local-ci/` — the gate
 
-zimged's test gate runs on this machine, not on GitHub. GitHub runs no tests (spec §9). The gate
+lecoq's test gate runs on this machine, not on GitHub. GitHub runs no tests (spec §9). The gate
 is a port of the clean-room local gate pattern used in ForgeLog (the reference implementation is
 `~/Git/dotnet-forgeLog/tools/local-ci/`).
 
@@ -47,14 +47,14 @@ needs them on the host.
 
 **Clean room** (the default, and the only result that counts as a gate):
 
-- The launcher (`run.sh` on the host) refuses a dirty tree. It also refuses while another zimged
-  gate is running (label `zimged.gate`).
-- It clones the committed HEAD into `~/.cache/zimged-gate/<UTC>-<sha7>/src`. That is a real
+- The launcher (`run.sh` on the host) refuses a dirty tree. It also refuses while another lecoq
+  gate is running (label `lecoq.gate`).
+- It clones the committed HEAD into `~/.cache/lecoq-gate/<UTC>-<sha7>/src`. That is a real
   `git clone --no-hardlinks` with a detached checkout, not `git archive`. It isn't `/tmp`, which
   is RAM-backed here, and `target/` grows to several GB.
 - It builds the gate image from an empty context (`docker build - < Dockerfile`), which the layer
   cache makes near-instant. Then it re-executes the same `run.sh` inside the container with
-  `ZIMGED_GATE_INSIDE=1`.
+  `LECOQ_GATE_INSIDE=1`.
 - The run directory is deleted after a pass (`--keep` keeps it). After a failure it's kept and
   its path is printed.
 
@@ -64,11 +64,11 @@ prints `IN-PLACE PASS … (not a gate result)` and never writes a record.
 ### The gate container
 
 ```bash
-docker run --rm --init --name zimged-gate-<run-id> \
-  --label zimged.gate=<run-id> --label zimged.run=<run-id> \
-  -u "$(id -u):$(id -g)" -e ZIMGED_GATE_INSIDE=1 -e TINI_KILL_PROCESS_GROUP=1 \
-  -e HOME=<run-dir>/home -v zimged-gate-cargo:/cache/cargo -v <run-dir>:<run-dir> \
-  -w <run-dir>/src zimged-gate:local <run-dir>/src/tools/local-ci/run.sh <suites>
+docker run --rm --init --name lecoq-gate-<run-id> \
+  --label lecoq.gate=<run-id> --label lecoq.run=<run-id> \
+  -u "$(id -u):$(id -g)" -e LECOQ_GATE_INSIDE=1 -e TINI_KILL_PROCESS_GROUP=1 \
+  -e HOME=<run-dir>/home -v lecoq-gate-cargo:/cache/cargo -v <run-dir>:<run-dir> \
+  -w <run-dir>/src lecoq-gate:local <run-dir>/src/tools/local-ci/run.sh <suites>
 ```
 
 - **Never root**, so nothing root-owned lands on the host.
@@ -79,13 +79,13 @@ docker run --rm --init --name zimged-gate-<run-id> \
 - **Ctrl-C** stops it at once. That needs both `--init` and `TINI_KILL_PROCESS_GROUP=1`: without
   group mode, bash defers the signal until `cargo` finishes.
 - **The sweep is run-scoped.** After the container exits, the launcher removes containers
-  labelled `zimged.run=<this run's id>` and nothing else. The container is `--rm`, so this only
+  labelled `lecoq.run=<this run's id>` and nothing else. The container is `--rm`, so this only
   matters when the client was killed hard. A hung gate is removed with
-  `docker rm -f $(docker ps -aq --filter label=zimged.gate)`.
+  `docker rm -f $(docker ps -aq --filter label=lecoq.gate)`.
 
 ### Caches
 
-The `zimged-gate-cargo` named volume is `CARGO_HOME`: the crates.io registry index and the
+The `lecoq-gate-cargo` named volume is `CARGO_HOME`: the crates.io registry index and the
 downloaded crate sources. It holds no build output. `target/` lives in the clone and goes with it,
 so every gate run is a full build. `--cold` deletes the volume first. The volume is unlabelled,
 so no sweep touches it.

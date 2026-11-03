@@ -1,0 +1,26 @@
+# lecoq's winget default-locale manifest (#42): a template, see acastaner.lecoq.yaml.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+
+PackageIdentifier: acastaner.lecoq
+PackageVersion: "@VERSION@"
+PackageLocale: en-US
+Publisher: Arnaud Castaner
+PublisherUrl: https://github.com/acastaner
+PackageName: lecoq
+PackageUrl: https://github.com/acastaner/lecoq
+License: GPL-3.0-or-later
+LicenseUrl: https://github.com/acastaner/lecoq/blob/master/LICENSE
+ShortDescription: A small, very fast image viewer and quick editor
+Description: |-
+  lecoq is a small, very fast image viewer and quick editor. The wheel or the arrow keys move
+  through the other images in the same folder, and images can be marked up with shapes, text,
+  numbered steps, highlights and blur, then saved or copied.
+Moniker: lecoq
+Tags:
+  - image-viewer
+  - image-editor
+  - annotation
+  - screenshot
+ReleaseNotesUrl: https://github.com/acastaner/lecoq/releases/tag/v@VERSION@
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

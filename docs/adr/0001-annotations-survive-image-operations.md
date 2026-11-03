@@ -6,7 +6,7 @@ Crop, rotate, flip and resize transform the Annotations along with the Image ins
 - **Rotate and flip** transform shapes, lines and arrows, but text and Step counters stay upright.
 - **Resize** scales everything, including line thickness and font size.
 
-Decided in [Annotation and undo semantics](https://github.com/acastaner/zimged/issues/7).
+Decided in [Annotation and undo semantics](https://github.com/acastaner/lecoq/issues/7).
 
 ## Considered Options
 

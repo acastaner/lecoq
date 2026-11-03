@@ -1,0 +1,22 @@
+[package]
+name = "lecoq-codec"
+description = "Decoding (display size and full resolution), colour conversion, encoding and safe saves"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# AVIF read (§5.1) through libavif + dav1d, both built from source and linked statically. Needs
+# cmake, meson, ninja and nasm at build time, hence opt-in: release builds and the gate enable it.
+avif = ["dep:libavif-sys"]
+
+[dependencies]
+image.workspace = true
+fast_image_resize.workspace = true
+lcms2.workspace = true
+webp.workspace = true
+tempfile.workspace = true
+libavif-sys = { workspace = true, optional = true }

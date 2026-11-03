@@ -1,8 +1,8 @@
-pkgbase = zimged
+pkgbase = lecoq
 	pkgdesc = A small, very fast image viewer and quick editor
 	pkgver = @VERSION@
 	pkgrel = 1
-	url = https://github.com/acastaner/zimged
+	url = https://github.com/acastaner/lecoq
 	arch = x86_64
 	arch = aarch64
 	license = GPL-3.0-or-later
@@ -25,7 +25,9 @@ pkgbase = zimged
 	depends = libxrandr
 	depends = wayland
 	optdepends = xdg-desktop-portal: native open and save dialogs
-	source = zimged-@VERSION@.tar.gz::https://github.com/acastaner/zimged/archive/refs/tags/v@VERSION@.tar.gz
+	conflicts = zimged
+	replaces = zimged
+	source = lecoq-@VERSION@.tar.gz::https://github.com/acastaner/lecoq/archive/refs/tags/v@VERSION@.tar.gz
 	sha256sums = @SHA256@
 
-pkgname = zimged
+pkgname = lecoq

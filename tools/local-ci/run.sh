@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# zimged -- the gate, run locally on this machine. There is no other: GitHub runs no tests.
+# lecoq -- the gate, run locally on this machine. There is no other: GitHub runs no tests.
 #
 # Usage: ./tools/local-ci/run.sh [suite ...] [options]
 #
@@ -24,9 +24,9 @@ set -euo pipefail
 # TWO MODES, ONE SCRIPT (a port of the clean-room local gate; see tools/local-ci/README.md).
 #
 #   Clean room (the default, and the only gate result). The launcher refuses a dirty working tree,
-#   clones the committed HEAD into ~/.cache/zimged-gate/<run-id>/src, builds the gate image
+#   clones the committed HEAD into ~/.cache/lecoq-gate/<run-id>/src, builds the gate image
 #   (tools/local-ci/Dockerfile: Rust pinned by rust-toolchain.toml) and re-executes this script
-#   inside it with ZIMGED_GATE_INSIDE=1. Nothing from the host leaks in -- no target/, no
+#   inside it with LECOQ_GATE_INSIDE=1. Nothing from the host leaks in -- no target/, no
 #   ~/.cargo, no config -- and the working tree is never touched. After a pass of all suites the
 #   launcher records it as a git note (refs/notes/gate) on the tested commit's TREE and pushes it;
 #   the release workflow's gate-record job (#41) refuses a tree without one (check-gate-record.sh).
@@ -35,21 +35,21 @@ set -euo pipefail
 #   for rust-toolchain.toml. Useful while iterating; never a gate.
 #
 # ON DOCKER. Nothing here runs a `docker` command against anything it did not create. Every run has
-# a run id; the gate container carries it as `zimged.run=<run-id>` (and `zimged.gate=<run-id>`, for
+# a run id; the gate container carries it as `lecoq.run=<run-id>` (and `lecoq.gate=<run-id>`, for
 # the one-gate-at-a-time check), runs as the calling user (never root), and sees no host resource
-# but its run directory and one unlabelled cache volume (zimged-gate-cargo: the crates.io registry,
+# but its run directory and one unlabelled cache volume (lecoq-gate-cargo: the crates.io registry,
 # never build output). The tests start no containers, so the gate container gets no Docker socket.
 # The exit sweep removes ONLY containers labelled with this run's id.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
 
-GATE_LABEL="zimged.gate"
+GATE_LABEL="lecoq.gate"
 # On everything a run starts; the exit sweep selects by it. Its value is the run id.
-RUN_LABEL="zimged.run"
-GATE_IMAGE="zimged-gate:local"
-GATE_CACHE_ROOT="${HOME}/.cache/zimged-gate"
-GATE_CARGO_VOLUME="zimged-gate-cargo"
+RUN_LABEL="lecoq.run"
+GATE_IMAGE="lecoq-gate:local"
+GATE_CACHE_ROOT="${HOME}/.cache/lecoq-gate"
+GATE_CARGO_VOLUME="lecoq-gate-cargo"
 ALL_SUITES=(lint test)
 
 usage() { sed -n '/^# Usage:/,/-h|--help/p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -88,11 +88,11 @@ fi
 # inside     -- this script, re-executed by the launcher inside the gate container
 # in-place   -- the working tree and the host toolchain; not a gate result
 # clean-room -- the launcher (the default)
-if [[ "${ZIMGED_GATE_INSIDE:-0}" == "1" ]]; then
+if [[ "${LECOQ_GATE_INSIDE:-0}" == "1" ]]; then
   # Only the launcher sets the marker, inside the gate container. Leaked into a host shell it would
   # silently skip the clean room, so refuse it there.
   if [[ ! -f /.dockerenv ]]; then
-    echo "ERROR: ZIMGED_GATE_INSIDE=1 is set, but this is not the gate container. Unset it." >&2
+    echo "ERROR: LECOQ_GATE_INSIDE=1 is set, but this is not the gate container. Unset it." >&2
     exit 1
   fi
   MODE="inside"
@@ -148,7 +148,7 @@ refuse_if_gate_running() {
   local running
   running="$(docker ps -q --filter "label=${GATE_LABEL}")"
   [[ -z "${running}" ]] && return 0
-  echo "ERROR: a zimged clean-room gate is already running:" >&2
+  echo "ERROR: a lecoq clean-room gate is already running:" >&2
   docker ps --filter "label=${GATE_LABEL}" --format '    {{.Names}}  ({{.Status}})' >&2
   echo "       Wait for it to finish. A hung one is removed with:" >&2
   echo "       docker rm -f \$(docker ps -aq --filter label=${GATE_LABEL})" >&2
@@ -159,7 +159,7 @@ refuse_if_gate_running() {
 #
 # The gate container is --rm, so normally nothing is left. But a launcher killed hard (or a docker
 # client that lost its daemon connection) can leave it running. The sweep removes everything
-# labelled `zimged.run=<this run's id>` and nothing else -- never a machine-wide selector. Only the
+# labelled `lecoq.run=<this run's id>` and nothing else -- never a machine-wide selector. Only the
 # host launcher sweeps, once, after the gate container exits (or on the way out of an abort).
 SWEPT_RUN_ID=""
 SWEEP_ON_EXIT=0
@@ -225,7 +225,7 @@ run_test() {
   # day they wave something through, so they are gated like any other code.
   echo "--- Guard scripts self-test ---"
   ./tools/local-ci/test_local_ci.sh
-  # Both seams of spec §9: the headless App (egui_kittest, crates/zimged/tests) and the Sibling
+  # Both seams of spec §9: the headless App (egui_kittest, crates/lecoq/tests) and the Sibling
   # ordering comparator. No display, GPU or network is needed.
   echo "--- cargo test --workspace --all-features ---"
   cargo test --workspace --all-features
@@ -236,9 +236,9 @@ run_test() {
 run_suites() {
   echo "=================================================================="
   if [[ "${MODE}" == "inside" ]]; then
-    echo "zimged gate -- clean room (inside the gate container)"
+    echo "lecoq gate -- clean room (inside the gate container)"
   else
-    echo "zimged gate -- IN-PLACE (working tree, host toolchain; not a gate result)"
+    echo "lecoq gate -- IN-PLACE (working tree, host toolchain; not a gate result)"
   fi
   echo "  Suites  : ${SUITES[*]}"
   echo "  Rust    : $(rustc --version) (rust-toolchain.toml pins ${RUST_VERSION})"
@@ -303,7 +303,7 @@ launch_clean_room() {
   run_dir="${GATE_CACHE_ROOT}/${run_id}"
 
   echo "=================================================================="
-  echo "zimged gate -- clean room"
+  echo "lecoq gate -- clean room"
   echo "  Commit  : ${head_sha} ($(git rev-parse --abbrev-ref HEAD))"
   echo "  Suites  : ${SUITES[*]}"
   echo "  Rust    : ${RUST_VERSION} (rust-toolchain.toml)"
@@ -348,11 +348,11 @@ launch_clean_room() {
   # -v run_dir at the identical path: the paths printed inside are valid on the host too.
   # Default (bridge) network: cargo fetches from crates.io; the tests need no network.
   docker run --rm --init \
-    --name "zimged-gate-${run_id}" \
+    --name "lecoq-gate-${run_id}" \
     --label "${GATE_LABEL}=${run_id}" \
     --label "${RUN_LABEL}=${run_id}" \
     -u "$(id -u):$(id -g)" \
-    -e ZIMGED_GATE_INSIDE=1 \
+    -e LECOQ_GATE_INSIDE=1 \
     -e TINI_KILL_PROCESS_GROUP=1 \
     -e HOME="${run_dir}/home" \
     -v "${GATE_CARGO_VOLUME}:/cache/cargo" \

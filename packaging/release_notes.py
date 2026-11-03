@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""zimged release notes (#41, spec §9): the maintainer's notes plus the tools/bench numbers.
+"""lecoq release notes (#41, spec §9): the maintainer's notes plus the tools/bench numbers.
 
   packaging/release_notes.py <version>      e.g. 0.1.0; prints Markdown on stdout
 

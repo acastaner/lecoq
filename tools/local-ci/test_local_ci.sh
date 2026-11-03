@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# zimged -- self-test of the gate's own guard scripts (#14).
+# lecoq -- self-test of the gate's own guard scripts (#14).
 #
 # Usage: ./tools/local-ci/test_local_ci.sh
 #

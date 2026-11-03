@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Check that every package associates zimged with exactly the formats it reads (#42, spec §8.5).
+"""Check that every package associates lecoq with exactly the formats it reads (#42, spec §8.5).
 
     packaging/check_associations.py
 
-The source of truth is zimged_codec::READ_EXTENSIONS. Compared with it: the Linux desktop file
+The source of truth is lecoq_codec::READ_EXTENSIONS. Compared with it: the Linux desktop file
 and AppStream metainfo (as MIME types), the WiX source's `Extensions`, the macOS Info.plist's
 CFBundleDocumentTypes, and the winget installer manifest's FileExtensions. Also checks that none
-of them makes zimged the default handler: no WiX <ProgId>/<Extension> and no write of an
+of them makes lecoq the default handler: no WiX <ProgId>/<Extension> and no write of an
 extension key's default value, and LSHandlerRank Alternate on every macOS document type.
 
 Run by the release workflow's gate-record job; standard library only.
@@ -46,10 +46,10 @@ def compare(what: str, found: set[str], expected: set[str]) -> None:
 
 
 def read_extensions() -> set[str]:
-    src = (ROOT / "crates/zimged-codec/src/lib.rs").read_text()
+    src = (ROOT / "crates/lecoq-codec/src/lib.rs").read_text()
     m = re.search(r"pub const READ_EXTENSIONS: &\[&str\] = &\[(.*?)\];", src, re.S)
     if not m:
-        sys.exit("ERROR: READ_EXTENSIONS not found in crates/zimged-codec/src/lib.rs")
+        sys.exit("ERROR: READ_EXTENSIONS not found in crates/lecoq-codec/src/lib.rs")
     return set(re.findall(r'"([a-z0-9]+)"', m.group(1)))
 
 
@@ -61,10 +61,10 @@ def main() -> int:
     mimes = {m for e in exts & MIME.keys() for m in MIME[e]}
 
     # Linux.
-    desktop = (PKG / "linux/zimged.desktop").read_text()
+    desktop = (PKG / "linux/lecoq.desktop").read_text()
     line = next((l for l in desktop.splitlines() if l.startswith("MimeType=")), "MimeType=")
-    compare("linux/zimged.desktop MimeType", set(filter(None, line[9:].split(";"))), mimes)
-    metainfo = ET.parse(PKG / "linux/io.github.acastaner.zimged.metainfo.xml")
+    compare("linux/lecoq.desktop MimeType", set(filter(None, line[9:].split(";"))), mimes)
+    metainfo = ET.parse(PKG / "linux/io.github.acastaner.lecoq.metainfo.xml")
     compare(
         "linux metainfo <provides><mediatype>",
         {m.text for m in metainfo.iterfind("provides/mediatype")},
@@ -72,19 +72,19 @@ def main() -> int:
     )
 
     # Windows: the WiX source.
-    wxs = (PKG / "windows/zimged.wxs").read_text()
+    wxs = (PKG / "windows/lecoq.wxs").read_text()
     m = re.search(r'<\?define Extensions = "([^"]*)" \?>', wxs)
-    compare("windows/zimged.wxs Extensions", set(m.group(1).split(";")) if m else set(), exts)
+    compare("windows/lecoq.wxs Extensions", set(m.group(1).split(";")) if m else set(), exts)
     body = re.sub(r"<!--.*?-->", "", wxs, flags=re.S)
     if re.search(r"<(ProgId|Extension)\b", body):
-        errors.append("windows/zimged.wxs: <ProgId>/<Extension> write the extension's default value")
+        errors.append("windows/lecoq.wxs: <ProgId>/<Extension> write the extension's default value")
     for key in re.findall(r'<RegistryValue\b[^>]*\bKey="([^"]*)"[^>]*>', body):
         tail = key.rsplit("\\", 1)[-1]
         if tail.startswith("."):
-            errors.append(f"windows/zimged.wxs: writes under {key}, an extension's own key")
+            errors.append(f"windows/lecoq.wxs: writes under {key}, an extension's own key")
 
     # Windows: the winget installer manifest (a flat list, so no YAML parser is needed).
-    yaml = (PKG / "windows/winget/acastaner.zimged.installer.yaml").read_text()
+    yaml = (PKG / "windows/winget/acastaner.lecoq.installer.yaml").read_text()
     m = re.search(r"^FileExtensions:\n((?:  - .*\n)+)", yaml, re.M)
     found = set(re.findall(r"  - (\S+)", m.group(1))) if m else set()
     compare("windows/winget installer FileExtensions", found, exts)
