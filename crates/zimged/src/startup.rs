@@ -74,6 +74,10 @@ pub fn run() -> eframe::Result {
     if !from_clipboard && launch.handed_off(path.as_deref()) {
         return Ok(());
     }
+    // macOS delivers a Finder "Open With" / double-click as an Apple Event, not in argv, and a file
+    // that launches the app arrives before the window exists; wire it into the single-instance
+    // inbox before eframe starts (§8.5). A no-op elsewhere.
+    launch.platform.instance.install_open_event_source();
 
     // 3. The window and GL context, in parallel with the decode.
     let title = match &path {

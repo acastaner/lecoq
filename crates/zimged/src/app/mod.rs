@@ -311,9 +311,6 @@ impl ZimgedApp {
             .platform
             .instance
             .set_wake(Box::new(move || ctx.request_repaint()));
-        // macOS delivers a Finder "Open With" / double-click as an Apple Event, not in argv; wire it
-        // into the same inbox now that the window and NSApplication exist (§8.5). A no-op elsewhere.
-        launch.platform.instance.install_open_event_source();
         let mut editor = Editor::with_tool_styles(&launch.config.tools);
         editor.set_history_pixel_cap(launch.history_pixel_cap);
         // §8.3: the highlight tool's magnification is the `magnify_factor` setting.

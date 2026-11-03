@@ -21,9 +21,12 @@ trash.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 # Finder's "Open With" arrives as a kAEOpenDocuments Apple Event, handled in instance/apple_events.rs.
 objc2.workspace = true
+# NSApplicationWillFinishLaunchingNotification: the handler must be installed before the launch event.
+objc2-app-kit = { workspace = true, features = ["NSApplication"] }
 objc2-foundation = { workspace = true, features = [
     "NSAppleEventManager",
     "NSAppleEventDescriptor",
+    "NSNotification",
     "NSURL",
     # The Apple Event four-char-code types (AEEventClass/AEEventID/DescType) the handler methods use.
     "objc2-core-services",

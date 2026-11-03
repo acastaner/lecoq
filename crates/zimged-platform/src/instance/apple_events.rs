@@ -3,8 +3,14 @@
 //! winit owns the `NSApplication` delegate and implements no `application:openURLs:`, so AppKit's
 //! default handler would reject the document ("cannot open files in the … format"). We instead
 //! register our own handler on `NSAppleEventManager`, which is independent of the delegate, and push
-//! what it receives into the single-instance [`Inbox`] as an [`Arrival`]. Registering from the
-//! eframe creation hook (main thread, after finish-launching) overrides AppKit's default handler.
+//! what it receives into the single-instance [`Inbox`] as an [`Arrival`].
+//!
+//! When. A document that launches the app is delivered during `finishLaunching`, before
+//! `applicationDidFinishLaunching` (and so before eframe's creation hook, which is too late: AppKit's
+//! default handler has already rejected it). The handler goes in on
+//! `NSApplicationWillFinishLaunchingNotification` instead: AppKit's defaults are in place by then, so
+//! ours overrides them, and the launch event has not been dispatched yet. [`install`] only registers
+//! for that notification, so it runs before eframe starts.
 //!
 //! Only the handler glue lives here; the file-list → [`Arrival`] mapping is [`super::open_arrival`],
 //! tested on every platform. This module is compiled only on macOS and is verified by building
@@ -16,7 +22,10 @@ use std::sync::Arc;
 use objc2::rc::Retained;
 use objc2::runtime::NSObject;
 use objc2::{AnyThread, DefinedClass, define_class, msg_send, sel};
-use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager};
+use objc2_app_kit::NSApplicationWillFinishLaunchingNotification;
+use objc2_foundation::{
+    NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSNotificationCenter,
+};
 
 use super::{Arrival, Inbox, open_arrival};
 
@@ -52,6 +61,12 @@ define_class!(
         ) {
             self.dispatch(event);
         }
+
+        /// Posted once, on the main thread, before AppKit dispatches the launch event.
+        #[unsafe(method(applicationWillFinishLaunching:))]
+        fn application_will_finish_launching(&self, _notification: &NSNotification) {
+            self.register_event_handlers();
+        }
     }
 );
 
@@ -59,6 +74,28 @@ impl Handler {
     fn new(inbox: Arc<Inbox>) -> Retained<Self> {
         let this = Self::alloc().set_ivars(Ivars { inbox });
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// Point open-documents and reopen at this handler, overriding AppKit's defaults.
+    fn register_event_handlers(&self) {
+        let manager = NSAppleEventManager::sharedAppleEventManager();
+        let selector = sel!(handleAppleEvent:withReplyEvent:);
+        // SAFETY: the handler responds to the selector, which takes the two descriptor arguments the
+        // manager passes to it.
+        unsafe {
+            manager.setEventHandler_andSelector_forEventClass_andEventID(
+                self,
+                selector,
+                CORE_EVENT_CLASS,
+                AE_OPEN_DOCUMENTS,
+            );
+            manager.setEventHandler_andSelector_forEventClass_andEventID(
+                self,
+                selector,
+                CORE_EVENT_CLASS,
+                AE_REOPEN_APPLICATION,
+            );
+        }
     }
 
     fn dispatch(&self, event: &NSAppleEventDescriptor) {
@@ -97,28 +134,22 @@ fn file_urls(event: &NSAppleEventDescriptor) -> Vec<PathBuf> {
     paths
 }
 
-/// Register the handler for open-documents and reopen events. Called once, on the main thread.
+/// Arrange for the handler to take open-documents and reopen events from will-finish-launching on.
+/// Called once, on the main thread, before the event loop starts (see the module docs for why).
 pub(super) fn install(inbox: Arc<Inbox>) {
     let handler = Handler::new(inbox);
-    let manager = NSAppleEventManager::sharedAppleEventManager();
-    let selector = sel!(handleAppleEvent:withReplyEvent:);
-    // SAFETY: the handler responds to the selector, which takes the two descriptor arguments the
-    // manager passes to it.
+    // SAFETY: the handler responds to the selector, which takes the posted NSNotification; the name
+    // is AppKit's own constant and any object may post it.
     unsafe {
-        manager.setEventHandler_andSelector_forEventClass_andEventID(
+        NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
             &handler,
-            selector,
-            CORE_EVENT_CLASS,
-            AE_OPEN_DOCUMENTS,
-        );
-        manager.setEventHandler_andSelector_forEventClass_andEventID(
-            &handler,
-            selector,
-            CORE_EVENT_CLASS,
-            AE_REOPEN_APPLICATION,
+            sel!(applicationWillFinishLaunching:),
+            Some(NSApplicationWillFinishLaunchingNotification),
+            None,
         );
     }
-    // The manager holds the handler by an unretained reference, and nothing else owns it, so it
-    // must live for the rest of the process. Leak it deliberately.
+    // The notification centre and, later, the Apple Event manager hold the handler by unretained
+    // references, and nothing else owns it, so it must live for the rest of the process. Leak it
+    // deliberately.
     std::mem::forget(handler);
 }

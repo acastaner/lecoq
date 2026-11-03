@@ -49,7 +49,8 @@ pub trait SingleInstance: Send + Sync {
     /// `kAEOpenDocuments` Apple Event, never in `argv` (§8.5); this makes it arrive as an
     /// [`Arrival`] exactly like a single-instance hand-off, so the app's per-frame drain opens it
     /// with no new path. A no-op on Linux and Windows, where the launch path is in `argv`. Call
-    /// once, on the main thread, after the window and NSApplication exist.
+    /// once, on the main thread, before the event loop starts: a file that launches the app is
+    /// delivered while it finishes launching, before the window exists.
     fn install_open_event_source(&self) {}
 }
 
