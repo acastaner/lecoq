@@ -1,0 +1,68 @@
+# lecoq -- the Windows portable zip on demand (#52), for testing on a Windows host before a tag.
+# Run by hand (Actions > windows portable > Run workflow, or `gh workflow run windows-portable.yml`)
+# on any branch. It repeats the release's `windows` build, including the static C runtime check,
+# and uploads the zip as an artifact; it publishes nothing. Keep the steps in step with
+# release.yml's `windows` job.
+name: windows portable
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  windows-portable:
+    name: windows portable (x86_64)
+    runs-on: windows-2022
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the pinned toolchain
+        run: |
+          rust="$(bash tools/local-ci/check-toolchain-pin.sh .)"
+          rustup toolchain install "${rust}" --profile minimal
+          bash tools/local-ci/check-toolchain-pin.sh . --rustc "$(rustc --version)"
+
+      # As in release.yml: cl.exe first on PATH, ahead of the runner's MinGW gcc.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install the build tools
+        # As in release.yml, without WiX: the zip needs no installer.
+        run: |
+          rm -f /usr/bin/link.exe
+          python -m pip install --disable-pip-version-check meson ninja
+          choco install nasm -y --no-progress
+          echo 'C:\Program Files\NASM' >> "${GITHUB_PATH}"
+
+      - name: Build lecoq
+        # See release.yml: CFLAGS=/MT makes dav1d's meson build follow +crt-static.
+        env:
+          CFLAGS: /MT
+          CXXFLAGS: /MT
+        run: cargo build --release --locked -p lecoq --features avif
+
+      - name: Check that the C runtime is linked statically
+        shell: pwsh
+        run: |
+          $deps = dumpbin /dependents target\release\lecoq.exe
+          $deps
+          $crt = $deps | Select-String -Pattern '(vcruntime|msvcp|api-ms-win-crt-)\S*\.dll'
+          if ($crt) { Write-Error "lecoq.exe imports the dynamic C runtime: $crt"; exit 1 }
+
+      - name: Package
+        run: packaging/windows/build.sh dist portable
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: dist/*-portable.zip
+          if-no-files-found: error
