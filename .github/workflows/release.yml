@@ -187,24 +187,7 @@ jobs:
           cargo install --locked cargo-wix@0.3.9
 
       - name: Build lecoq
-        # .cargo/config.toml links the C runtime statically (+crt-static, #52). libdav1d-sys runs
-        # meson without -Db_vscrt, so dav1d would build /MD; meson puts CFLAGS after its own flags,
-        # and cl.exe takes the last of /MD and /MT. Spelled -MT: Git Bash would turn "/MT" into a
-        # Windows path.
-        env:
-          CFLAGS: -MT
-          CXXFLAGS: -MT
         run: cargo build --release --locked -p lecoq --features avif
-
-      - name: Check that the C runtime is linked statically
-        # .cargo/config.toml builds with +crt-static (#52), so lecoq.exe (in the MSI and the portable
-        # zip) runs without the Visual C++ Redistributable. Fail if it imports any of its DLLs.
-        shell: pwsh
-        run: |
-          $deps = dumpbin /dependents target\release\lecoq.exe
-          $deps
-          $crt = $deps | Select-String -Pattern '(vcruntime|msvcp|api-ms-win-crt-)\S*\.dll'
-          if ($crt) { Write-Error "lecoq.exe imports the dynamic C runtime: $crt"; exit 1 }
 
       - name: Package
         run: packaging/windows/build.sh dist msi winget portable

@@ -41,8 +41,9 @@ Two artifacts run from any folder and register nothing (§8.3, §8.5):
 
 - **Windows:** `lecoq-X.Y.Z-x86_64-windows-portable.zip`. It holds `lecoq.exe`, `LICENSE.txt` and
   `portable.txt`. While `portable.txt` sits next to the exe, `config.toml` lives in a `config\`
-  folder beside it. `.cargo/config.toml` links the C runtime statically, so the exe needs no
-  Visual C++ Redistributable. The release's `windows` job checks this with `dumpbin`.
+  folder beside it. Like the MSI, it uses the Visual C++ runtime installed on the machine
+  (`vcruntime140.dll`). A static C runtime isn't possible yet: rust-skia publishes no static-CRT
+  Windows binaries (#52).
 - **Linux:** `lecoq-X.Y.Z-x86_64.AppImage`, packed by `build.sh appimage` with `appimagetool` and
   its runtime (both pinned by SHA-256 in `build.sh`). Like the tarball it bundles no libraries and
   needs glibc 2.36 or later. For portable settings, run it once with `--appimage-portable-config`,

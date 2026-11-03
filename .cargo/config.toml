@@ -1,5 +1,0 @@
-# Windows: link the C runtime statically (#52), so lecoq.exe runs without the Visual C++
-# Redistributable (vcruntime140.dll), from the portable zip as from the MSI. skia-bindings follows
-# it: it compiles with /MT and fetches its `-static` prebuilt binaries. Other targets are unchanged.
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]

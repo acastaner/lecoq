@@ -1,7 +1,7 @@
 # lecoq -- the Windows portable zip on demand (#52), for testing on a Windows host before a tag.
 # Run by hand (Actions > windows portable > Run workflow, or `gh workflow run windows-portable.yml`)
-# on any branch. It repeats the release's `windows` build, including the static C runtime check,
-# and uploads the zip as an artifact; it publishes nothing. Keep the steps in step with
+# on any branch. It repeats the release's `windows` build, lists the DLLs lecoq.exe imports, and
+# uploads the zip as an artifact; it publishes nothing. Keep the steps in step with
 # release.yml's `windows` job.
 name: windows portable
 
@@ -44,19 +44,13 @@ jobs:
           echo 'C:\Program Files\NASM' >> "${GITHUB_PATH}"
 
       - name: Build lecoq
-        # See release.yml: CFLAGS=-MT makes dav1d's meson build follow +crt-static.
-        env:
-          CFLAGS: -MT
-          CXXFLAGS: -MT
         run: cargo build --release --locked -p lecoq --features avif
 
-      - name: Check that the C runtime is linked statically
+      - name: List the DLLs lecoq.exe imports
+        # The C runtime is linked dynamically: rust-skia publishes no static-CRT Windows binaries,
+        # and building Skia from source fails on the runner (#52).
         shell: pwsh
-        run: |
-          $deps = dumpbin /dependents target\release\lecoq.exe
-          $deps
-          $crt = $deps | Select-String -Pattern '(vcruntime|msvcp|api-ms-win-crt-)\S*\.dll'
-          if ($crt) { Write-Error "lecoq.exe imports the dynamic C runtime: $crt"; exit 1 }
+        run: dumpbin /dependents target\release\lecoq.exe
 
       - name: Package
         run: packaging/windows/build.sh dist portable
