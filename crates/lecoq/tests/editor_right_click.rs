@@ -1,5 +1,7 @@
 //! Right-click returns to the Select tool (#47, ADR 0006): a secondary press on the canvas leaves
-//! any drawing tool for Select, cancelling a mid-draw gesture; in Select it does nothing.
+//! any drawing tool for Select, cancelling a mid-draw gesture. In Select mode it does nothing *with
+//! an Annotation selected* (ADR 0008 kept that case); with nothing selected it now opens the
+//! Context menu instead — that is covered in `context_menu.rs`.
 
 mod support;
 
@@ -50,6 +52,8 @@ fn right_click_cancels_an_in_progress_draw() {
     assert_eq!(app.doc().undo_len(), 0, "a cancelled draw leaves no step");
 }
 
+// With an Annotation selected, right-click still does nothing and keeps the selection (ADR 0008:
+// the Context menu opens only with no selection). The no-selection case is in `context_menu.rs`.
 #[test]
 fn right_click_in_select_does_nothing_and_keeps_the_selection() {
     let mut app = TestApp::open_fixture("small-320x240.jpg");
