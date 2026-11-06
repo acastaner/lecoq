@@ -81,10 +81,18 @@ pub enum Command {
     /// File › Move to trash and its quick action (§2): trash the file on screen even with
     /// Annotations selected (Delete would remove those instead).
     Trash,
+    /// File › Copy to… and Alt+C (§6.1, issue #53): open the folder picker and copy the Image's
+    /// file into the chosen Target folder.
+    CopyTo,
+    /// File › Move to… and Alt+M (§6.1, issue #53): open the folder picker and move the Image's
+    /// file into the chosen Target folder.
+    MoveTo,
     /// Help › Keyboard shortcuts.
     ShowShortcuts,
     /// Help › About lecoq.
     ShowAbout,
     /// View → *Allow multiple instances* (§8.3, §8.4). Persisted; takes effect at the next start.
     SetAllowMultipleInstances(bool),
+    /// View → *Follow files after copy/move* (§8.3, issue #53). Persisted.
+    SetFollowFiles(bool),
 }

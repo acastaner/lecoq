@@ -72,6 +72,8 @@ pub fn shortcuts(ctx: &egui::Context) -> Vec<(String, String)> {
             f(&input::NEW_FROM_CLIPBOARD),
             strings::DOES_NEW_FROM_CLIPBOARD,
         ),
+        (f(&input::COPY_TO), strings::DOES_COPY_TO),
+        (f(&input::MOVE_TO), strings::DOES_MOVE_TO),
         (f(&input::DUPLICATE), strings::DOES_DUPLICATE),
         (f(&input::UNDO), strings::DOES_UNDO),
         (

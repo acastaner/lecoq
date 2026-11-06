@@ -15,6 +15,8 @@ use lecoq_core::Restack;
 /// What the menus show this frame.
 pub struct MenuBar {
     pub allow_multiple_instances: bool,
+    /// View → *Follow files after copy/move* (issue #53).
+    pub follow_files: bool,
     /// Can Image operations run (an editable Image is open)?
     pub can_edit: bool,
     /// Is an Image shown (save, copy, zoom)?
@@ -93,9 +95,46 @@ fn file_items(ui: &mut egui::Ui, bar: &MenuBar, command: &mut Option<Command>) {
         }
     }
     ui.separator();
+    file_operations(ui, bar, command);
+}
+
+/// The File operations group (§2, issue #53): Copy to…, Move to…, Move to trash, each enabled when
+/// there is a file on screen. Shared by the File menu and the Context menu so the two never drift
+/// and every Context-menu action also lives in the menu bar (ADR 0008).
+fn file_operations(ui: &mut egui::Ui, bar: &MenuBar, command: &mut Option<Command>) {
+    if item(
+        ui,
+        bar.has_file,
+        strings::COPY_TO,
+        shortcut(ui, &input::COPY_TO),
+    ) {
+        *command = Some(Command::CopyTo);
+    }
+    if item(
+        ui,
+        bar.has_file,
+        strings::MOVE_TO,
+        shortcut(ui, &input::MOVE_TO),
+    ) {
+        *command = Some(Command::MoveTo);
+    }
     if item(ui, bar.has_file, strings::MOVE_TO_TRASH, None) {
         *command = Some(Command::Trash);
     }
+}
+
+/// The Context menu (ADR 0008, issue #53), opened by a right-click on the canvas in Select mode with
+/// no Annotation selected: the clipboard actions then the File operations, mirroring the menu bar
+/// with the same labels, shortcuts and enabling rules. The empty window shows only Paste enabled.
+pub fn context_menu(ui: &mut egui::Ui, bar: &MenuBar, command: &mut Option<Command>) {
+    if item(ui, bar.has_image, strings::COPY, shortcut(ui, &input::COPY)) {
+        *command = Some(Command::Copy);
+    }
+    if item(ui, true, strings::PASTE, shortcut(ui, &input::PASTE)) {
+        *command = Some(Command::Paste);
+    }
+    ui.separator();
+    file_operations(ui, bar, command);
 }
 
 fn edit_items(ui: &mut egui::Ui, bar: &MenuBar, command: &mut Option<Command>) {
@@ -120,8 +159,10 @@ fn edit_items(ui: &mut egui::Ui, bar: &MenuBar, command: &mut Option<Command>) {
     ) {
         *command = Some(Command::Duplicate);
     }
+    // Edit › Delete is the Annotation command: enabled only with a selection (issue #53). The
+    // Delete key still trashes the file when nothing is selected (§3.1); that is unchanged.
     let delete = Some(strings::KEY_DELETE.to_owned());
-    if item(ui, bar.selection || bar.has_file, strings::DELETE, delete) {
+    if item(ui, bar.selection, strings::DELETE, delete) {
         *command = Some(Command::Delete);
     }
     ui.separator();
@@ -209,6 +250,14 @@ fn view_items(ui: &mut egui::Ui, bar: &MenuBar, command: &mut Option<Command>) {
         .changed()
     {
         *command = Some(Command::SetAllowMultipleInstances(allow));
+    }
+    let mut follow = bar.follow_files;
+    if ui
+        .checkbox(&mut follow, strings::FOLLOW_FILES)
+        .accessible_name(strings::FOLLOW_FILES)
+        .changed()
+    {
+        *command = Some(Command::SetFollowFiles(follow));
     }
 }
 

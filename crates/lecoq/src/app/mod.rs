@@ -220,6 +220,18 @@ enum Proceed {
     Open(PathBuf),
     Go(Direction),
     Close,
+    /// Copy the file into this Target folder (issue #53): acts on the file as it is on disk once
+    /// the unsaved-changes flow has resolved.
+    CopyTo(PathBuf),
+    /// Move the file into this Target folder (issue #53).
+    MoveTo(PathBuf),
+}
+
+/// Which File operation a pending folder picker is for (issue #53).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FolderOp {
+    Copy,
+    Move,
 }
 
 /// The unsaved-changes prompt while it is up.
@@ -297,6 +309,13 @@ pub struct LecoqApp {
     copy: CopyState,
     /// A pasted or Ctrl+dropped image being read and decoded (§4.6, §6.3).
     incoming: Option<PendingIncoming>,
+    /// The Copy to / Move to folder picker while it is up, and which operation it is for (#53).
+    folder_dialog: Option<(FolderOp, mpsc::Receiver<Option<PathBuf>>)>,
+    /// The last Target folder a Copy to / Move to chose this session, where the next picker starts
+    /// (stories 7, 8). Session-only: not persisted across runs.
+    last_target: Option<PathBuf>,
+    /// The right-click Context menu while it is open, anchored at where it opened (ADR 0008).
+    context_menu: Option<egui::Pos2>,
 }
 
 impl LecoqApp {
@@ -348,6 +367,9 @@ impl LecoqApp {
             handed_over: None,
             copy: CopyState::default(),
             incoming: None,
+            folder_dialog: None,
+            last_target: None,
+            context_menu: None,
         };
         if from_clipboard {
             app.execute(Command::Paste);
@@ -372,6 +394,11 @@ impl LecoqApp {
             Command::SetAllowMultipleInstances(allow) => {
                 self.update_config(|config| config.allow_multiple_instances = allow);
             }
+            Command::SetFollowFiles(follow) => {
+                self.update_config(|config| config.follow_files = follow);
+            }
+            Command::CopyTo => self.show_folder_dialog(FolderOp::Copy),
+            Command::MoveTo => self.show_folder_dialog(FolderOp::Move),
             Command::SelectTool(tool) => self.editor.select_tool(tool),
             Command::Undo => self.editor.undo(),
             Command::Redo => self.editor.redo(),
@@ -545,6 +572,7 @@ impl LecoqApp {
             || self.save.queued.is_some()
             || self.copy.in_progress.is_some()
             || self.copy.queued
+            || self.folder_dialog.is_some()
             || self.incoming.is_some()
             || self.trashed.as_ref().is_some_and(|t| t.waits_for_scan)
             || self.save.after_save.is_some()
@@ -588,7 +616,9 @@ impl LecoqApp {
                 .path
                 .as_deref()
                 .is_some_and(|from| self.navigation.would_move(from, *direction)),
-            Proceed::Open(_) | Proceed::Close => true,
+            // Copy to / Move to always ask with unsaved changes (stories 20–23), so the edits
+            // travel with the file (or are dropped on Discard).
+            Proceed::Open(_) | Proceed::Close | Proceed::CopyTo(_) | Proceed::MoveTo(_) => true,
         };
         // A text box being edited is finished first (#28): its step only counts as an unsaved
         // change once finished, and an empty box is discarded, leaving nothing to ask about.
@@ -615,6 +645,8 @@ impl LecoqApp {
                 self.closing = true;
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+            Proceed::CopyTo(folder) => self.copy_to_folder(&folder),
+            Proceed::MoveTo(folder) => self.move_to_folder(&folder),
         }
     }
 
@@ -1099,6 +1131,192 @@ impl LecoqApp {
         }
     }
 
+    // ---- The Context menu (ADR 0008, issue #53) ----
+
+    /// Open the Context menu on a right-click press over the canvas, in Select mode with no
+    /// Annotation selected, no gesture and no modal (stories 40, 44, 47–50). Detected at the press,
+    /// before the editor may switch tools, so a drawing tool's right-click only escapes to Select
+    /// (#47) and never also opens the menu; a right-press mid-rubber-band (primary held) is not a
+    /// menu gesture either (story 49).
+    fn open_context_menu(&mut self, ctx: &egui::Context, menu: &menu_bar::MenuBar) {
+        if self.context_menu.is_some()
+            || self.dialog_up()
+            || self.editor.tool() != ToolId::Select
+            || menu.selection
+            || self.editor.in_gesture()
+        {
+            return;
+        }
+        let Some(area) = self.canvas.map(|c| c.area) else {
+            return;
+        };
+        let pressed = ctx.input(|i| {
+            if i.pointer.primary_down() {
+                return None;
+            }
+            i.pointer
+                .button_pressed(egui::PointerButton::Secondary)
+                .then(|| i.pointer.latest_pos())
+                .flatten()
+        });
+        if let Some(pos) = pressed.filter(|p| area.contains(*p)) {
+            self.context_menu = Some(pos);
+        }
+    }
+
+    /// Draw the Context menu while it is open and act on the entry chosen. Its entries mirror the
+    /// menu bar (`menu_bar::context_menu`); a click, a click outside or Esc closes it.
+    fn show_context_menu(&mut self, ctx: &egui::Context, menu: &menu_bar::MenuBar) {
+        let Some(pos) = self.context_menu else {
+            return;
+        };
+        let mut open = true;
+        let id = egui::Id::unique("lecoq_context_menu");
+        let chosen = egui::Popup::new(
+            id,
+            ctx.clone(),
+            egui::PopupAnchor::Position(pos),
+            egui::LayerId::new(egui::Order::Foreground, id),
+        )
+        .kind(egui::PopupKind::Menu)
+        .open_bool(&mut open)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            let mut command = None;
+            menu_bar::context_menu(ui, menu, &mut command);
+            command
+        })
+        .and_then(|inner| inner.inner);
+        if !open || chosen.is_some() {
+            self.context_menu = None;
+        }
+        if let Some(command) = chosen {
+            self.execute(command);
+        }
+    }
+
+    // ---- Copy to / Move to (issue #53, §6.4) ----
+
+    /// Open the native folder picker for a Copy to / Move to (stories 1–9). It starts in the last
+    /// Target folder chosen this session, else the Image's own folder (stories 7, 8), and its
+    /// answer comes back through [`Self::poll_folder_dialog`], like the open and Save As dialogs.
+    /// Only with a file on screen: the clipboard Image and the empty window offer no File
+    /// operations (stories 34, 35). One picker at a time.
+    fn show_folder_dialog(&mut self, op: FolderOp) {
+        if self.folder_dialog.is_some() {
+            return;
+        }
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let start = self.last_target.clone().unwrap_or_else(|| {
+            path.parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .map(Path::to_owned)
+                .unwrap_or_default()
+        });
+        let title = match op {
+            FolderOp::Copy => strings::COPY_TO_DIALOG_TITLE,
+            FolderOp::Move => strings::MOVE_TO_DIALOG_TITLE,
+        };
+        let (tx, rx) = mpsc::channel();
+        self.folder_dialog = Some((op, rx));
+        let ctx = self.ctx.clone();
+        self.platform.dialogs.pick_folder(
+            title,
+            &start,
+            Box::new(move |chosen| {
+                let _ = tx.send(chosen);
+                ctx.request_repaint();
+            }),
+        );
+    }
+
+    /// The folder picker's answer, once it has come: a chosen Target folder starts the operation
+    /// (through the unsaved-changes flow); Cancel does nothing at all (story 9).
+    fn poll_folder_dialog(&mut self) {
+        let answer = match &self.folder_dialog {
+            Some((_, rx)) => match rx.try_recv() {
+                Ok(chosen) => chosen,
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => None,
+            },
+            None => return,
+        };
+        let (op, _) = self.folder_dialog.take().expect("checked above");
+        let Some(folder) = answer else {
+            return;
+        };
+        // The next picker this session starts here (story 7).
+        self.last_target = Some(folder.clone());
+        let then = match op {
+            FolderOp::Copy => Proceed::CopyTo(folder),
+            FolderOp::Move => Proceed::MoveTo(folder),
+        };
+        self.proceed_or_ask(then);
+    }
+
+    /// Copy the file into `folder` (stories 2, 13, 18). With Follow off the window is unchanged;
+    /// with Follow on it opens the copy, so further edits go to the new file (story 18) with a
+    /// fresh History (story 19). The file as it is on disk is copied: the unsaved-changes flow has
+    /// already run (stories 20–23).
+    fn copy_to_folder(&mut self, folder: &Path) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let name = file_name(&path);
+        let folder_name = file_name(folder);
+        match lecoq_platform::copy_to(&path, folder) {
+            Ok(lecoq_platform::Transfer::Done(new_path)) => {
+                if self.config.follow_files {
+                    self.open(&new_path);
+                }
+                self.post_message(strings::copied_to(&folder_name));
+            }
+            // Copy into a folder that already holds the name, its own folder included (stories
+            // 27, 28).
+            Ok(lecoq_platform::Transfer::Exists | lecoq_platform::Transfer::AlreadyThere) => {
+                self.post_message(strings::already_exists(&name, &folder_name));
+            }
+            Err(reason) => self.post_message(strings::cant_copy_file(&name, &reason)),
+        }
+    }
+
+    /// Move the file into `folder` (stories 1, 10–12). Follow off leaves it the way trashing does —
+    /// the moved path gets the trash bookkeeping and the window steps to the next Sibling (shared
+    /// with [`Self::leave_trashed`], not duplicated); Follow on opens the file at its new path.
+    fn move_to_folder(&mut self, folder: &Path) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let name = file_name(&path);
+        let folder_name = file_name(folder);
+        match lecoq_platform::move_to(&path, folder) {
+            Ok(lecoq_platform::Transfer::Done(new_path)) => {
+                if self.config.follow_files {
+                    self.open(&new_path);
+                } else {
+                    // The moved file leaves the folder: take it out of the Siblings and keep the
+                    // watcher from reporting it as deleted from outside (story 33), then step off
+                    // it exactly as a trashed file (stories 10–12).
+                    self.navigation.forget(&path);
+                    self.trashed = Some(Trashed {
+                        path,
+                        waits_for_scan: false,
+                    });
+                    self.leave_trashed();
+                }
+                self.post_message(strings::moved_to(&folder_name));
+            }
+            // The file is already in that folder (story 29): nothing to do, nothing to say.
+            Ok(lecoq_platform::Transfer::AlreadyThere) => {}
+            Ok(lecoq_platform::Transfer::Exists) => {
+                self.post_message(strings::already_exists(&name, &folder_name));
+            }
+            Err(reason) => self.post_message(strings::cant_move_file(&name, &reason)),
+        }
+    }
+
     /// After a save. Save As to another file: the window now shows that file (its name, its
     /// folder's Siblings).
     fn saved_as(&mut self, ctx: &egui::Context, target: &Path) {
@@ -1410,6 +1628,13 @@ impl LecoqApp {
         }
     }
 
+    /// The canvas rectangle as laid out last frame (points), with or without an Image: where a
+    /// right-click opens the Context menu, including the grey margin and the empty window. Tests
+    /// use it to aim a right-click.
+    pub fn canvas_area(&self) -> Option<egui::Rect> {
+        self.canvas.map(|c| c.area)
+    }
+
     /// What the canvas shows, as of the last frame: `None` when no Image is drawn.
     pub fn canvas(&self) -> Option<CanvasView> {
         let layout = self.canvas?;
@@ -1544,6 +1769,7 @@ impl eframe::App for LecoqApp {
         self.unsaved_prompt(&ctx);
         self.overwrite_prompt(&ctx);
         self.poll_open_dialog();
+        self.poll_folder_dialog();
         self.poll_save_dialog();
         self.poll_save(&ctx);
         self.poll_copy(&ctx);
@@ -1561,18 +1787,23 @@ impl eframe::App for LecoqApp {
         self.track_window(&ctx);
         self.config_saver.poll(&ctx, &self.config);
 
+        // The menu-bar flags, built once: the menu bar shows them, and the Context menu mirrors the
+        // same entries with the same enabling (ADR 0008).
+        let doc = self.document();
+        let menu = menu_bar::MenuBar {
+            allow_multiple_instances: self.config.allow_multiple_instances,
+            follow_files: self.config.follow_files,
+            can_edit: self.editor.can_edit(),
+            has_image: self.shown.is_some(),
+            has_file: self.path.is_some(),
+            can_undo: doc.is_some_and(|d| d.can_undo()),
+            can_redo: doc.is_some_and(|d| d.can_redo()),
+            selection: doc.is_some_and(|d| !d.selection().is_empty()),
+        };
+        self.open_context_menu(&ctx, &menu);
+
         // Fullscreen hides all chrome (§2): the menu bar, property bar, tool strip and status bar.
         if !self.fullscreen.wanted {
-            let doc = self.document();
-            let menu = menu_bar::MenuBar {
-                allow_multiple_instances: self.config.allow_multiple_instances,
-                can_edit: self.editor.can_edit(),
-                has_image: self.shown.is_some(),
-                has_file: self.path.is_some(),
-                can_undo: doc.is_some_and(|d| d.can_undo()),
-                can_redo: doc.is_some_and(|d| d.can_redo()),
-                selection: doc.is_some_and(|d| !d.selection().is_empty()),
-            };
             if let Some(command) = menu_bar::show(ui, &menu) {
                 self.execute(command);
             }
@@ -1615,6 +1846,7 @@ impl eframe::App for LecoqApp {
             },
         ));
         self.view = view;
+        self.show_context_menu(&ctx, &menu);
         self.resize_dialog(&ctx);
         self.help_dialog(&ctx);
         self.start_animation(&ctx);

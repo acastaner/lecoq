@@ -48,6 +48,8 @@ pub const OPEN: &str = "Open…";
 pub const SAVE: &str = "Save";
 pub const SAVE_AS: &str = "Save As…";
 pub const NEW_FROM_CLIPBOARD: &str = "New from clipboard";
+pub const COPY_TO: &str = "Copy to…";
+pub const MOVE_TO: &str = "Move to…";
 pub const MOVE_TO_TRASH: &str = "Move to trash";
 
 // Edit
@@ -77,6 +79,7 @@ pub const FULLSCREEN: &str = "Fullscreen";
 pub const NEXT_IMAGE: &str = "Next image";
 pub const PREVIOUS_IMAGE: &str = "Previous image";
 pub const ALLOW_MULTIPLE_INSTANCES: &str = "Allow multiple instances";
+pub const FOLLOW_FILES: &str = "Follow files after copy/move";
 
 // Help
 pub const KEYBOARD_SHORTCUTS: &str = "Keyboard shortcuts";
@@ -214,6 +217,29 @@ pub const FROZEN_DRAWN: &str = "frozen at frame 1";
 pub const FIRST_IMAGE: &str = "First image in folder";
 pub const LAST_IMAGE: &str = "Last image in folder";
 pub const MOVED_TO_TRASH: &str = "Moved to trash";
+
+/// "Copied to <folder>" / "Moved to <folder>" after a Copy to / Move to (§2, stories 25–26). The
+/// folder is the Target folder's last path component.
+pub fn copied_to(folder: &str) -> String {
+    format!("Copied to {folder}")
+}
+
+pub fn moved_to(folder: &str) -> String {
+    format!("Moved to {folder}")
+}
+
+/// A name already taken in the Target folder (stories 27–28): nothing is done.
+pub fn already_exists(name: &str, folder: &str) -> String {
+    format!("{name} already exists in {folder}")
+}
+
+pub fn cant_copy_file(name: &str, reason: &str) -> String {
+    format!("Can't copy {name}: {reason}")
+}
+
+pub fn cant_move_file(name: &str, reason: &str) -> String {
+    format!("Can't move {name}: {reason}")
+}
 pub const IMAGE_COPIED: &str = "Image copied to the clipboard";
 pub const ANNOTATIONS_COPIED: &str = "Annotations copied to the clipboard";
 pub const NOTHING_TO_PASTE: &str = "Nothing to paste";
@@ -275,6 +301,10 @@ pub const IMAGES_FILTER: &str = "Images";
 /// The open dialog's filter that shows every file.
 pub const ALL_FILES_FILTER: &str = "All files";
 pub const SAVE_AS_DIALOG_TITLE: &str = "Save As";
+/// The folder picker's title, telling the user which File operation they are choosing a folder for
+/// (story 6).
+pub const COPY_TO_DIALOG_TITLE: &str = "Copy to folder";
+pub const MOVE_TO_DIALOG_TITLE: &str = "Move to folder";
 
 pub const SAVE_CHANGES_TITLE: &str = "Save changes?";
 
@@ -327,6 +357,8 @@ pub const DOES_OPEN: &str = "Open";
 pub const DOES_COPY: &str = "Copy";
 pub const DOES_PASTE: &str = "Paste";
 pub const DOES_NEW_FROM_CLIPBOARD: &str = "Open the clipboard image in a new window";
+pub const DOES_COPY_TO: &str = "Copy the file to a folder";
+pub const DOES_MOVE_TO: &str = "Move the file to a folder";
 pub const DOES_DUPLICATE: &str = "Duplicate the selected Annotations";
 pub const DOES_UNDO: &str = "Undo";
 pub const DOES_REDO: &str = "Redo";

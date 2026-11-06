@@ -29,6 +29,10 @@ pub const REDO_Y: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, K
 pub const DUPLICATE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
 pub const RAISE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::CloseBracket);
 pub const LOWER: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::OpenBracket);
+// Copy to… / Move to… (issue #53). Alt on every platform (Option on macOS). Consumed only when no
+// text box is being edited, so Option+C/M still type characters while typing (§6.1, story 37).
+pub const COPY_TO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::ALT, Key::C);
+pub const MOVE_TO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::ALT, Key::M);
 
 /// The arrow keys move the keyboard focus (§8.6): → and ↓ to the next control, ← and ↑ to the
 /// previous one, in Tab order. egui's own arrow navigation goes by geometry, which jumps from the
@@ -167,6 +171,12 @@ fn command_keys(input: &mut egui::InputState, commands: &mut Vec<Command>) {
     }
     if input.consume_shortcut(&LOWER) {
         commands.push(Command::Restack(Restack::Down));
+    }
+    if input.consume_shortcut(&COPY_TO) {
+        commands.push(Command::CopyTo);
+    }
+    if input.consume_shortcut(&MOVE_TO) {
+        commands.push(Command::MoveTo);
     }
 }
 
