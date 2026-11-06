@@ -84,11 +84,12 @@ jobs:
         # source and links them statically (#19, as in tools/local-ci/Dockerfile). curl,
         # libfontconfig1-dev and libfreetype-dev: skia-bindings downloads prebuilt Skia with curl and
         # links fontconfig and freetype (#25). appstream: appimagetool validates the metainfo with
-        # appstreamcli when it is installed (#52).
+        # appstreamcli when it is installed (#52). file: appimagetool inspects the binary
+        # with it while building the AppImage, and aborts if it is missing (#52).
         run: |
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git dpkg-dev \
-            cmake make g++ meson ninja-build nasm libfontconfig1-dev libfreetype-dev appstream
+            cmake make g++ meson ninja-build nasm libfontconfig1-dev libfreetype-dev appstream file
 
       - uses: actions/checkout@v5
 
