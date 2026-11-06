@@ -112,6 +112,18 @@ fn edit_duplicate_and_delete_act_on_the_selection() {
 }
 
 #[test]
+fn edit_delete_is_disabled_with_no_selection() {
+    // The Annotation command is enabled only with a selection (issue #53): with nothing selected,
+    // Edit › Delete is greyed out, even though the Delete key still trashes the file (§3.1).
+    let mut app = TestApp::open_fixture("small-320x240.jpg");
+    assert!(app.doc().annotations().is_empty());
+
+    app.control("Edit").click();
+    app.harness.run();
+    assert!(app.control("Delete").accesskit_node().is_disabled());
+}
+
+#[test]
 fn edit_copy_and_paste_go_through_the_clipboard() {
     let clipboard = Arc::new(MemoryClipboard::default());
     let mut app = TestApp::with_platform(Platform::in_memory().with_clipboard(clipboard.clone()));
@@ -179,6 +191,9 @@ fn help_lists_the_keyboard_shortcuts_and_esc_closes_it() {
     app.harness
         .get_by_label("Open the clipboard image in a new window");
     app.harness.get_by_label("Rectangle tool");
+    // Copy to / Move to earn their place in the list too (issue #53).
+    app.harness.get_by_label("Alt+C");
+    app.harness.get_by_label("Alt+M");
 
     app.press(Key::Escape);
     assert!(app.harness.query_by_label("Ctrl+Shift+S").is_none());

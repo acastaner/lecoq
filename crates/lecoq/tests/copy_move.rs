@@ -71,19 +71,19 @@ fn canon(path: &Path) -> PathBuf {
 #[test]
 fn the_picker_is_titled_and_starts_in_the_image_folder_then_the_last_target() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
-    let (_t1, dest1) = target_dir("dest1");
+    let (_t1, target1) = target_dir("target1");
 
     // First File operation of the session: the picker starts in the Image's own folder (story 8),
     // and is titled for the operation (story 6).
-    copy_to(&mut app, &dialogs, &dest1);
+    copy_to(&mut app, &dialogs, &target1);
     assert_eq!(dialogs.last_title().as_deref(), Some("Copy to folder"));
     assert_eq!(canon(&dialogs.last_start().unwrap()), canon(app.dir.path()));
 
     // The next picker starts in the last Target folder (story 7).
-    let (_t2, dest2) = target_dir("dest2");
-    move_to(&mut app, &dialogs, &dest2);
+    let (_t2, target2) = target_dir("target2");
+    move_to(&mut app, &dialogs, &target2);
     assert_eq!(dialogs.last_title().as_deref(), Some("Move to folder"));
-    assert_eq!(canon(&dialogs.last_start().unwrap()), canon(&dest1));
+    assert_eq!(canon(&dialogs.last_start().unwrap()), canon(&target1));
 }
 
 #[test]
@@ -106,9 +106,9 @@ fn cancelling_the_picker_does_nothing() {
 #[test]
 fn copy_leaves_the_same_image_on_screen_and_says_where_it_went() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
-    let (_t, dest) = target_dir("Keepers");
+    let (_t, target) = target_dir("Keepers");
 
-    copy_to(&mut app, &dialogs, &dest);
+    copy_to(&mut app, &dialogs, &target);
 
     assert_eq!(
         app.status("File name"),
@@ -117,7 +117,10 @@ fn copy_leaves_the_same_image_on_screen_and_says_where_it_went() {
     );
     assert_eq!(app.status("Sibling position"), "1 / 2");
     assert_eq!(app.status("Message"), "Copied to Keepers");
-    assert!(dest.join("a.jpg").exists(), "the copy landed in the folder");
+    assert!(
+        target.join("a.jpg").exists(),
+        "the copy landed in the folder"
+    );
     assert!(app.dir.path().join("a.jpg").exists(), "the original stays");
 }
 
@@ -126,23 +129,23 @@ fn copy_leaves_the_same_image_on_screen_and_says_where_it_went() {
 #[test]
 fn move_shows_the_next_sibling() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg", "c.jpg"], "b.jpg");
-    let (_t, dest) = target_dir("Elsewhere");
+    let (_t, target) = target_dir("Elsewhere");
 
-    move_to(&mut app, &dialogs, &dest);
+    move_to(&mut app, &dialogs, &target);
 
     assert_eq!(app.status("File name"), "c.jpg");
     assert_eq!(app.status("Sibling position"), "2 / 2");
     assert_eq!(app.status("Message"), "Moved to Elsewhere");
-    assert!(dest.join("b.jpg").exists(), "the file moved");
+    assert!(target.join("b.jpg").exists(), "the file moved");
     assert!(!app.dir.path().join("b.jpg").exists(), "it left its folder");
 }
 
 #[test]
 fn move_at_the_end_of_the_list_shows_the_previous_sibling() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg", "c.jpg"], "c.jpg");
-    let (_t, dest) = target_dir("Elsewhere");
+    let (_t, target) = target_dir("Elsewhere");
 
-    move_to(&mut app, &dialogs, &dest);
+    move_to(&mut app, &dialogs, &target);
 
     assert_eq!(app.status("File name"), "b.jpg");
     assert_eq!(app.status("Sibling position"), "2 / 2");
@@ -151,9 +154,9 @@ fn move_at_the_end_of_the_list_shows_the_previous_sibling() {
 #[test]
 fn moving_the_only_image_leaves_the_empty_window() {
     let (mut app, dialogs) = folder(&["only.jpg"], "only.jpg");
-    let (_t, dest) = target_dir("Elsewhere");
+    let (_t, target) = target_dir("Elsewhere");
 
-    move_to(&mut app, &dialogs, &dest);
+    move_to(&mut app, &dialogs, &target);
 
     assert!(app.harness.state().canvas().is_none());
     app.harness
@@ -165,9 +168,9 @@ fn moving_the_only_image_leaves_the_empty_window() {
 #[test]
 fn the_moved_file_is_not_reported_as_deleted_from_outside() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg", "c.jpg"], "b.jpg");
-    let (_t, dest) = target_dir("Elsewhere");
+    let (_t, target) = target_dir("Elsewhere");
 
-    move_to(&mut app, &dialogs, &dest);
+    move_to(&mut app, &dialogs, &target);
 
     // The window is on c.jpg with no unsaved marker (the move is lecoq's own action, not a deletion
     // from outside, story 33), and b is gone from the list for good: moving back lands on a, not b.
@@ -185,15 +188,15 @@ fn the_moved_file_is_not_reported_as_deleted_from_outside() {
 #[test]
 fn a_name_already_in_the_target_folder_is_refused() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
-    let (_t, dest) = target_dir("dest");
+    let (_t, target) = target_dir("target");
     // A different file already called a.jpg is in the Target folder.
-    std::fs::write(dest.join("a.jpg"), b"not the same file").unwrap();
+    std::fs::write(target.join("a.jpg"), b"not the same file").unwrap();
 
-    copy_to(&mut app, &dialogs, &dest);
+    copy_to(&mut app, &dialogs, &target);
 
-    assert_eq!(app.status("Message"), "a.jpg already exists in dest");
+    assert_eq!(app.status("Message"), "a.jpg already exists in target");
     assert_eq!(
-        std::fs::read(dest.join("a.jpg")).unwrap(),
+        std::fs::read(target.join("a.jpg")).unwrap(),
         b"not the same file",
         "the existing file is not overwritten"
     );
@@ -228,12 +231,12 @@ fn moving_into_its_own_folder_does_nothing_and_says_nothing() {
 #[test]
 fn a_failed_copy_keeps_the_image_and_says_why() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
-    let (_t, dest) = target_dir("dest");
-    set_readonly(&dest, true);
+    let (_t, target) = target_dir("target");
+    set_readonly(&target, true);
 
-    copy_to(&mut app, &dialogs, &dest);
+    copy_to(&mut app, &dialogs, &target);
 
-    set_readonly(&dest, false); // so the temp dir can be cleaned up
+    set_readonly(&target, false); // so the temp dir can be cleaned up
     assert!(
         app.status("Message").starts_with("Can't copy a.jpg:"),
         "message was {:?}",
@@ -243,6 +246,35 @@ fn a_failed_copy_keeps_the_image_and_says_why() {
         app.status("File name"),
         "a.jpg",
         "the Image stays on screen"
+    );
+}
+
+#[test]
+fn a_failed_move_keeps_the_image_and_says_why() {
+    let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
+    let (_t, target) = target_dir("target");
+    set_readonly(&target, true);
+
+    move_to(&mut app, &dialogs, &target);
+
+    set_readonly(&target, false); // so the temp dir can be cleaned up
+    assert!(
+        app.status("Message").starts_with("Can't move a.jpg:"),
+        "message was {:?}",
+        app.status("Message")
+    );
+    assert_eq!(
+        app.status("File name"),
+        "a.jpg",
+        "the Image stays on screen"
+    );
+    assert!(
+        app.dir.path().join("a.jpg").exists(),
+        "the original is left in place"
+    );
+    assert!(
+        !target.join("a.jpg").exists(),
+        "nothing landed in the Target folder"
     );
 }
 
@@ -310,19 +342,19 @@ fn alt_c_and_alt_m_do_not_open_a_picker_while_editing_text() {
 #[test]
 fn copy_with_unsaved_changes_asks_first_and_save_copies_the_saved_file() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
-    let (_t, dest) = target_dir("dest");
+    let (_t, target) = target_dir("target");
     let a = app.dir.path().join("a.jpg");
     let before = std::fs::read(&a).unwrap();
     edit(&mut app);
 
-    copy_to(&mut app, &dialogs, &dest);
+    copy_to(&mut app, &dialogs, &target);
     assert!(app.harness.query_by_label("Save changes?").is_some());
     app.dialog_control("Save").click();
     app.settle();
 
     assert_ne!(std::fs::read(&a).unwrap(), before, "a.jpg was written");
     // The edits travelled with the file: the copy carries the red rectangle (story 21).
-    let copied = image::open(dest.join("a.jpg")).unwrap().to_rgb8();
+    let copied = image::open(target.join("a.jpg")).unwrap().to_rgb8();
     let edge = copied.get_pixel(10, 25);
     assert!(edge[0] > 180 && edge[1] < 90 && edge[2] < 90, "{edge:?}");
 }
@@ -330,12 +362,12 @@ fn copy_with_unsaved_changes_asks_first_and_save_copies_the_saved_file() {
 #[test]
 fn copy_with_unsaved_changes_discard_copies_the_file_as_on_disk() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
-    let (_t, dest) = target_dir("dest");
+    let (_t, target) = target_dir("target");
     let a = app.dir.path().join("a.jpg");
     let before = std::fs::read(&a).unwrap();
     edit(&mut app);
 
-    copy_to(&mut app, &dialogs, &dest);
+    copy_to(&mut app, &dialogs, &target);
     app.dialog_control("Discard").click();
     app.settle();
 
@@ -345,20 +377,20 @@ fn copy_with_unsaved_changes_discard_copies_the_file_as_on_disk() {
         "the original is untouched"
     );
     // The copy is the file as it was on disk (no rectangle), byte for byte the pre-edit a.jpg.
-    assert_eq!(std::fs::read(dest.join("a.jpg")).unwrap(), before);
+    assert_eq!(std::fs::read(target.join("a.jpg")).unwrap(), before);
 }
 
 #[test]
 fn copy_with_unsaved_changes_cancel_does_nothing() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
-    let (_t, dest) = target_dir("dest");
+    let (_t, target) = target_dir("target");
     edit(&mut app);
 
-    copy_to(&mut app, &dialogs, &dest);
+    copy_to(&mut app, &dialogs, &target);
     app.dialog_control("Cancel").click();
     app.settle();
 
-    assert!(!dest.join("a.jpg").exists(), "nothing was copied");
+    assert!(!target.join("a.jpg").exists(), "nothing was copied");
     assert_eq!(
         app.status("File name"),
         "a.jpg •",
@@ -370,11 +402,11 @@ fn copy_with_unsaved_changes_cancel_does_nothing() {
 fn trashing_still_does_not_prompt_but_copy_and_move_do() {
     // Trash keeps its no-prompt rule (story 24); the prompt is Copy to / Move to only.
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
-    let (_t, dest) = target_dir("dest");
+    let (_t, target) = target_dir("target");
     edit(&mut app);
     app.click_px((200.0, 200.0)); // deselect, so a later Delete would mean the file
 
-    move_to(&mut app, &dialogs, &dest);
+    move_to(&mut app, &dialogs, &target);
     assert!(
         app.harness.query_by_label("Save changes?").is_some(),
         "Move to asks"
@@ -388,12 +420,12 @@ fn trashing_still_does_not_prompt_but_copy_and_move_do() {
 #[test]
 fn copy_with_follow_on_shows_the_copy_in_its_new_folder_with_a_fresh_history() {
     let (mut app, dialogs) = with_follow(&["a.jpg", "b.jpg"], "a.jpg", true);
-    let (_t, dest) = target_dir("Copies");
+    let (_t, target) = target_dir("Copies");
     // A drawn-and-saved edit, so there is History to lose when the window opens the copy.
     edit(&mut app);
     app.key_with(Modifiers::COMMAND, Key::S);
 
-    copy_to(&mut app, &dialogs, &dest);
+    copy_to(&mut app, &dialogs, &target);
 
     assert_eq!(app.status("File name"), "a.jpg");
     assert_eq!(app.status("Message"), "Copied to Copies");
@@ -409,17 +441,17 @@ fn copy_with_follow_on_shows_the_copy_in_its_new_folder_with_a_fresh_history() {
 #[test]
 fn after_a_follow_on_copy_edits_and_saves_go_to_the_copy_not_the_original() {
     let (mut app, dialogs) = with_follow(&["a.jpg", "b.jpg"], "a.jpg", true);
-    let (_t, dest) = target_dir("Copies");
+    let (_t, target) = target_dir("Copies");
     let original = app.dir.path().join("a.jpg");
     let original_before = std::fs::read(&original).unwrap();
 
-    copy_to(&mut app, &dialogs, &dest);
+    copy_to(&mut app, &dialogs, &target);
     // Now editing the shown Image and saving writes the copy, leaving the original alone (story 18).
     edit(&mut app);
     app.key_with(Modifiers::COMMAND, Key::S);
     app.wait_for_status("File name", "a.jpg");
 
-    let saved_copy = image::open(dest.join("a.jpg")).unwrap().to_rgb8();
+    let saved_copy = image::open(target.join("a.jpg")).unwrap().to_rgb8();
     let edge = saved_copy.get_pixel(10, 25);
     assert!(edge[0] > 180 && edge[1] < 90 && edge[2] < 90, "{edge:?}");
     assert_eq!(
@@ -432,9 +464,9 @@ fn after_a_follow_on_copy_edits_and_saves_go_to_the_copy_not_the_original() {
 #[test]
 fn move_with_follow_on_shows_the_file_at_its_new_path() {
     let (mut app, dialogs) = with_follow(&["a.jpg", "b.jpg"], "a.jpg", true);
-    let (_t, dest) = target_dir("Moved");
+    let (_t, target) = target_dir("Moved");
 
-    move_to(&mut app, &dialogs, &dest);
+    move_to(&mut app, &dialogs, &target);
 
     assert_eq!(app.status("File name"), "a.jpg");
     assert_eq!(app.status("Message"), "Moved to Moved");
@@ -443,8 +475,34 @@ fn move_with_follow_on_shows_the_file_at_its_new_path() {
         "1 / 1",
         "now in the Target folder"
     );
-    assert!(dest.join("a.jpg").exists());
+    assert!(target.join("a.jpg").exists());
     assert!(!app.dir.path().join("a.jpg").exists());
+}
+
+#[test]
+fn move_with_follow_on_steps_through_the_target_folders_siblings() {
+    let (mut app, dialogs) = with_follow(&["a.jpg", "b.jpg"], "a.jpg", true);
+    let (_t, target) = target_dir("Moved");
+    // The Target folder already holds other images: following the move lands among them, not in a
+    // folder of one.
+    std::fs::copy(support::fixture_path(SMALL), target.join("m.jpg")).unwrap();
+    std::fs::copy(support::fixture_path(SMALL), target.join("z.jpg")).unwrap();
+
+    move_to(&mut app, &dialogs, &target);
+
+    assert_eq!(app.status("File name"), "a.jpg");
+    assert_eq!(
+        app.status("Sibling position"),
+        "1 / 3",
+        "now among the Target folder's three images"
+    );
+    // Arrowing on moves through the Target folder's Siblings, not back to the source folder.
+    app.press(Key::ArrowRight);
+    assert_eq!(app.status("File name"), "m.jpg");
+    assert_eq!(app.status("Sibling position"), "2 / 3");
+    app.press(Key::ArrowRight);
+    assert_eq!(app.status("File name"), "z.jpg");
+    assert_eq!(app.status("Sibling position"), "3 / 3");
 }
 
 // ---- The Follow setting (stories 15, 16) ----

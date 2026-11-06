@@ -1087,13 +1087,19 @@ impl LecoqApp {
             self.post_message(strings::cant_trash(&name, &reason.to_string()));
             return;
         }
+        self.leave_file(path);
+        self.post_message(strings::MOVED_TO_TRASH);
+    }
+
+    /// Take `path` out of the Siblings and step off it, the way trashing and a Follow-off move
+    /// both leave the file behind (shared so the two paths stay identical).
+    fn leave_file(&mut self, path: PathBuf) {
         self.navigation.forget(&path);
         self.trashed = Some(Trashed {
             path,
             waits_for_scan: false,
         });
         self.leave_trashed();
-        self.post_message(strings::MOVED_TO_TRASH);
     }
 
     /// Move off the trashed file: to the Sibling after it, else the one before it, else to the
@@ -1299,12 +1305,7 @@ impl LecoqApp {
                     // The moved file leaves the folder: take it out of the Siblings and keep the
                     // watcher from reporting it as deleted from outside (story 33), then step off
                     // it exactly as a trashed file (stories 10–12).
-                    self.navigation.forget(&path);
-                    self.trashed = Some(Trashed {
-                        path,
-                        waits_for_scan: false,
-                    });
-                    self.leave_trashed();
+                    self.leave_file(path);
                 }
                 self.post_message(strings::moved_to(&folder_name));
             }
