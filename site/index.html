@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lecoq: a fast image viewer and quick editor</title>
+<meta name="description" content="lecoq opens an image almost at once, flips through the folder with the wheel, and marks it up with arrows, text, highlights and blur. Free for Linux, Windows and macOS.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap">
+<style>
+:root {
+  --ground: #eef3f7;
+  --surface: #ffffff;
+  --ink: #1d2a40;
+  --muted: #4c5a70;
+  --line: #cfd9e3;
+  --mark: #d62839;      /* lecoq's annotation red */
+  --sun: #ffd166;       /* highlight yellow, from the icon */
+  --shot: #dbe5ee;
+  --shot-ink: #5c6b80;
+  --wide: 118;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #141c2b;
+    --surface: #1c2638;
+    --ink: #e8eef5;
+    --muted: #a7b4c6;
+    --line: #2d3a50;
+    --mark: #ff5a67;
+    --sun: #ffd166;
+    --shot: #212d42;
+    --shot-ink: #9aa8bc;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 400 1.0625rem/1.55 Archivo, system-ui, sans-serif;
+  font-stretch: 100%;
+}
+img, svg { display: block; max-width: 100%; }
+a { color: inherit; }
+:focus-visible { outline: 3px solid var(--mark); outline-offset: 3px; border-radius: 4px; }
+
+.wrap { width: min(1120px, 100% - 32px); margin-inline: auto; }
+
+/* Header */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 20px; }
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 750; font-stretch: 125%; font-size: 1.25rem; letter-spacing: -0.01em; }
+.brand img { width: 32px; height: 32px; }
+.top nav { display: flex; gap: 20px; font-weight: 550; }
+.top nav a { text-decoration: none; padding-block: 10px; }
+.top nav a:hover { text-decoration: underline; text-underline-offset: 4px; }
+
+/* Type scale: 17 / 21 / 28 / 40 / 64 */
+h1, h2, h3 { font-stretch: calc(var(--wide) * 1%); letter-spacing: -0.025em; line-height: 1.04; margin: 0; text-wrap: balance; }
+h1 { font-size: clamp(2.5rem, 1.4rem + 4.6vw, 4.5rem); font-weight: 800; max-width: 15ch; }
+h2 { font-size: clamp(1.75rem, 1.2rem + 2vw, 2.5rem); font-weight: 760; }
+h3 { font-size: 1.3125rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+p { margin: 0; max-width: 62ch; }
+.lede { font-size: 1.3125rem; line-height: 1.5; color: var(--muted); max-width: 40ch; }
+
+/* Buttons */
+.actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 22px;
+  border-radius: 10px; font-weight: 650; text-decoration: none; border: 2px solid var(--ink);
+}
+.btn-primary { background: var(--ink); color: var(--ground); }
+.btn-primary:hover { background: transparent; color: var(--ink); }
+.btn-ghost:hover { background: var(--ink); color: var(--ground); }
+.btn small { font-weight: 450; opacity: .75; }
+
+/* Hero */
+.hero { padding-block: 48px 0; display: grid; gap: 28px; }
+.hero-shot { position: relative; margin-top: 32px; }
+.note {
+  position: absolute; z-index: 1; left: 3%; top: -12px;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  color: var(--mark); pointer-events: none;
+}
+.note b { font-size: clamp(1.5rem, 1rem + 2vw, 2.25rem); font-weight: 800; font-stretch: 125%; letter-spacing: -0.02em; line-height: 1; }
+.note span { font-weight: 600; font-size: .95rem; }
+.note svg { width: clamp(90px, 14vw, 170px); height: auto; margin: 6px 0 0 40px; overflow: visible; }
+.note path { fill: none; stroke: var(--mark); stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+.note .shaft { stroke-dasharray: 220; stroke-dashoffset: 220; animation: draw .55s .35s cubic-bezier(.3,.7,.3,1) forwards; }
+.note .head { opacity: 0; animation: pop .15s .85s forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+@keyframes pop { to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .note .shaft { animation: none; stroke-dashoffset: 0; }
+  .note .head { animation: none; opacity: 1; }
+}
+
+/* Screenshot slots: swap the placeholder div for
+   <img src="shots/NAME.webp" width="1600" height="1000" alt="..." loading="lazy" decoding="async"> */
+.shot {
+  margin: 0; border-radius: 14px; overflow: hidden; background: var(--shot);
+  border: 1px solid var(--line); box-shadow: 0 1px 0 var(--line), 0 24px 48px -28px rgb(29 42 64 / .45);
+}
+.shot img, .shot .ph { width: 100%; height: auto; aspect-ratio: 16 / 10; }
+.ph { display: grid; place-items: center; color: var(--shot-ink); font-weight: 550; text-align: center; padding: 16px;
+  background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 32px 32px; background-position: -1px -1px; }
+.hero-shot .note + .shot { margin-left: clamp(0px, 8vw, 96px); }
+.hero-shot .shot { margin-top: clamp(96px, 12vw, 150px); }
+.fine { font-size: .875rem; color: var(--muted); margin-top: 12px; }
+
+/* Feature rows */
+.feature { display: grid; gap: 32px; padding-block: 96px 0; align-items: center; }
+.feature-text { display: grid; gap: 18px; }
+.points { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; color: var(--muted); max-width: 52ch; }
+.points li { padding-left: 22px; position: relative; }
+.points li::before { content: ""; position: absolute; left: 0; top: .62em; width: 10px; height: 3px; background: var(--mark); border-radius: 2px; }
+.points strong { color: var(--ink); font-weight: 650; }
+@media (min-width: 880px) {
+  .feature { grid-template-columns: 5fr 7fr; gap: 64px; }
+  .feature.flip .feature-text { order: 2; }
+}
+
+kbd {
+  font: 650 .9em/1 Archivo, system-ui, sans-serif; display: inline-block; min-width: 1.7em; padding: .28em .45em;
+  text-align: center; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); border-bottom-width: 3px; color: var(--ink);
+}
+
+/* The tool row: one key per editor tool */
+.keys { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; max-width: 460px; }
+.keys { row-gap: 14px; }
+.keys li { display: grid; gap: 6px; justify-items: start; font-size: .875rem; color: var(--muted); line-height: 1.25; }
+.keys kbd { font-size: 1.125rem; width: 100%; padding: .55em 0; }
+
+/* Install */
+.install { padding-block: 112px 0; display: grid; gap: 32px; }
+.platforms { display: grid; gap: 0; border-top: 2px solid var(--ink); }
+.platform { display: grid; gap: 8px; padding-block: 22px; border-bottom: 1px solid var(--line); }
+.platform p { color: var(--muted); }
+.formats { font-weight: 600; color: var(--ink) !important; }
+@media (min-width: 760px) {
+  .platforms { grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+  .platform { padding: 24px 28px 28px 0; border-bottom: 0; align-content: start; }
+  .platform + .platform { padding-left: 28px; border-left: 1px solid var(--line); }
+}
+
+footer { margin-top: 112px; padding-block: 32px 40px; border-top: 1px solid var(--line); color: var(--muted); font-size: .9375rem; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 32px; }
+footer i { font-style: italic; }
+</style>
+</head>
+<body>
+<header class="wrap top">
+  <a class="brand" href="./"><img src="favicon.svg" alt="" width="32" height="32">lecoq</a>
+  <nav aria-label="Main">
+    <a href="#install">Download</a>
+    <a href="https://github.com/acastaner/lecoq">GitHub</a>
+  </nav>
+</header>
+
+<main>
+  <section class="wrap hero">
+    <h1>Double-click an image. It’s already open.</h1>
+    <p class="lede">lecoq is a small image viewer and quick editor. Flip through the folder with the wheel, mark an image up with arrows, text and blur, then save or copy it.</p>
+    <div class="actions">
+      <a class="btn btn-primary" href="https://github.com/acastaner/lecoq/releases/latest">Download lecoq <small>v0.1.7</small></a>
+      <a class="btn btn-ghost" href="#install">Linux, Windows and macOS</a>
+    </div>
+
+    <div class="hero-shot">
+      <div class="note" aria-hidden="true">
+        <b>107 ms</b>
+        <span>from launch to first image</span>
+        <svg viewBox="0 0 170 120">
+          <path class="shaft" d="M6 6 C 40 70, 90 98, 150 104"/>
+          <path class="head" d="M128 88 L152 104 L126 116"/>
+        </svg>
+      </div>
+      <figure class="shot">
+        <div class="ph" role="img" aria-label="Screenshot placeholder: lecoq showing a photo">Screenshot: lecoq viewing a photo, window chrome included</div>
+      </figure>
+      <p class="fine">Cold start at p50 on an Intel Core i5-12600KF under Wayland. The budget is 150 ms at p90.</p>
+    </div>
+  </section>
+
+  <section class="wrap feature" aria-labelledby="view-h">
+    <div class="feature-text">
+      <h2 id="view-h">A viewer that keeps up with you</h2>
+      <ul class="points">
+        <li><strong>The wheel or <kbd>←</kbd> <kbd>→</kbd></strong> moves through the folder, in the same order as your file manager.</li>
+        <li><strong><kbd>Ctrl</kbd>+wheel</strong> zooms, <kbd>0</kbd> fits the window, <kbd>F11</kbd> goes fullscreen.</li>
+        <li><strong><kbd>Delete</kbd></strong> sends the file to the trash and shows the next one.</li>
+        <li>JPEG, PNG, WebP, GIF, BMP, ICO, TIFF and AVIF. Animated GIF and WebP play.</li>
+      </ul>
+    </div>
+    <figure class="shot">
+      <div class="ph" role="img" aria-label="Screenshot placeholder: moving through a folder">Screenshot: a folder of photos, mid-flip</div>
+    </figure>
+  </section>
+
+  <section class="wrap feature flip" aria-labelledby="edit-h">
+    <div class="feature-text">
+      <h2 id="edit-h">Mark it up without opening an editor</h2>
+      <p>Every tool is one key, the same ones Greenshot uses. Annotations stay editable until you leave the image, and highlight and blur show exactly what will be saved.</p>
+      <ul class="keys" aria-label="Editor tools and their shortcuts">
+        <li><kbd>R</kbd>Rectangle</li>
+        <li><kbd>E</kbd>Ellipse</li>
+        <li><kbd>L</kbd>Line</li>
+        <li><kbd>A</kbd>Arrow</li>
+        <li><kbd>F</kbd>Freehand</li>
+        <li><kbd>T</kbd>Text</li>
+        <li><kbd>I</kbd>Step counter</li>
+        <li><kbd>H</kbd>Highlight</li>
+        <li><kbd>O</kbd>Blur</li>
+        <li><kbd>C</kbd>Crop</li>
+      </ul>
+    </div>
+    <figure class="shot">
+      <div class="ph" role="img" aria-label="Screenshot placeholder: an annotated screenshot">Screenshot: arrows, step counters and a blurred area on a screenshot</div>
+    </figure>
+  </section>
+
+  <section class="wrap feature" aria-labelledby="save-h">
+    <div class="feature-text">
+      <h2 id="save-h">Save it, or paste it straight into the chat</h2>
+      <ul class="points">
+        <li><strong><kbd>Ctrl</kbd>+<kbd>S</kbd></strong> saves in place and keeps EXIF and the colour profile. Save As writes PNG, JPEG or WebP.</li>
+        <li><strong><kbd>Ctrl</kbd>+<kbd>C</kbd></strong> copies the whole image, ready to paste anywhere.</li>
+        <li><strong><kbd>Ctrl</kbd>+<kbd>V</kbd></strong> drops a clipboard image on top, or opens it in an empty window.</li>
+        <li>One undo history covers everything, and saving doesn’t clear it.</li>
+      </ul>
+    </div>
+    <figure class="shot">
+      <div class="ph" role="img" aria-label="Screenshot placeholder: pasting an image">Screenshot: a pasted image placed on top of another</div>
+    </figure>
+  </section>
+
+  <section class="wrap install" id="install" aria-labelledby="install-h">
+    <h2 id="install-h">Get lecoq</h2>
+    <div class="platforms">
+      <div class="platform">
+        <h3>Linux</h3>
+        <p class="formats">.deb, .rpm, Flatpak, AppImage, AUR, tarball</p>
+        <p>One binary for Wayland and X11, on any distribution with glibc 2.36 or later.</p>
+      </div>
+      <div class="platform">
+        <h3>Windows 10 and later</h3>
+        <p class="formats">MSI, winget, portable zip</p>
+        <p>Unsigned, so SmartScreen may warn the first time.</p>
+      </div>
+      <div class="platform">
+        <h3>macOS</h3>
+        <p class="formats">DMG for Apple silicon and Intel</p>
+        <p>Not notarised: right-click the app and choose Open the first time.</p>
+      </div>
+    </div>
+    <div class="actions">
+      <a class="btn btn-primary" href="https://github.com/acastaner/lecoq/releases/latest">Download the latest release</a>
+      <a class="btn btn-ghost" href="https://github.com/acastaner/lecoq">Read the source</a>
+    </div>
+    <p class="fine">lecoq adds itself to <i>Open with</i> and never makes itself your default viewer.</p>
+  </section>
+</main>
+
+<footer class="wrap">
+  <p><i>Lire, Éditer, Capturer, Orner et Quadriller.</i> Le Coq, the rooster.</p>
+  <p>Free software under GPL-3.0-or-later.</p>
+</footer>
+</body>
+</html>
