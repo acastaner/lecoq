@@ -9,6 +9,7 @@ pub mod config;
 pub mod dialogs;
 pub mod instance;
 pub mod launcher;
+pub mod transfer;
 pub mod trash;
 
 use std::sync::Arc;
@@ -18,6 +19,7 @@ pub use config::{Config, ConfigStore, MemoryConfigStore, OsConfigStore};
 pub use dialogs::{DialogReply, FileDialogs, MemoryFileDialogs, OpenDialogText, OsFileDialogs};
 pub use instance::{Arrival, HandOff, LocalSocketInstance, MemoryInstance, SingleInstance};
 pub use launcher::{Launcher, MemoryLauncher, OsLauncher};
+pub use transfer::{Transfer, copy_to, move_to, move_to_with};
 pub use trash::{MemoryTrash, OsTrash, Trash};
 
 /// Every OS adapter the app uses. Cheap to clone.

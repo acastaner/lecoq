@@ -31,6 +31,11 @@ pub trait FileDialogs: Send + Sync {
     /// Show the Save As dialog (Ctrl+Shift+S, §6.1) titled `title`, offering PNG, JPEG and WebP
     /// (§5.1), with `suggested` as the starting folder and file name. `reply` is called exactly once.
     fn save_image(&self, title: &str, suggested: &Path, reply: DialogReply);
+
+    /// Show the folder picker (Copy to… / Move to…, §6.4, issue #53) titled `title`, starting in
+    /// `start` (the last Target folder this session, else the Image's own folder). `reply` is
+    /// called exactly once with the folder chosen, or `None` on Cancel.
+    fn pick_folder(&self, title: &str, start: &Path, reply: DialogReply);
 }
 
 /// The formats Save As offers (§5.1): (filter name, extensions).
@@ -99,6 +104,23 @@ impl FileDialogs for OsFileDialogs {
             eprintln!("lecoq: can't show the save dialog: {e}");
         }
     }
+
+    fn pick_folder(&self, title: &str, start: &Path, reply: DialogReply) {
+        let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
+        if !start.as_os_str().is_empty() {
+            dialog = dialog.set_directory(start);
+        }
+        let dialog = dialog.pick_folder();
+        let spawned = std::thread::Builder::new()
+            .name("folder-dialog".into())
+            .spawn(move || {
+                let chosen = pollster::block_on(dialog);
+                reply(chosen.map(|folder| folder.path().to_owned()));
+            });
+        if let Err(e) = spawned {
+            eprintln!("lecoq: can't show the folder picker: {e}");
+        }
+    }
 }
 
 /// Scripted dialogs for tests: each dialog shown takes the next queued answer (cancel when none).
@@ -117,6 +139,7 @@ struct MemoryDialogsState {
     last_suggested: Option<PathBuf>,
     last_title: Option<String>,
     last_open_text: Option<OpenDialogText>,
+    last_start: Option<PathBuf>,
 }
 
 impl MemoryFileDialogs {
@@ -150,6 +173,11 @@ impl MemoryFileDialogs {
         self.state.lock().unwrap().last_open_text.clone()
     }
 
+    /// The folder the last folder picker started in (its starting directory).
+    pub fn last_start(&self) -> Option<PathBuf> {
+        self.state.lock().unwrap().last_start.clone()
+    }
+
     fn show(&self, title: &str, reply: DialogReply) {
         let mut state = self.state.lock().unwrap();
         state.opened += 1;
@@ -172,6 +200,11 @@ impl FileDialogs for MemoryFileDialogs {
 
     fn save_image(&self, title: &str, suggested: &Path, reply: DialogReply) {
         self.state.lock().unwrap().last_suggested = Some(suggested.to_owned());
+        self.show(title, reply);
+    }
+
+    fn pick_folder(&self, title: &str, start: &Path, reply: DialogReply) {
+        self.state.lock().unwrap().last_start = Some(start.to_owned());
         self.show(title, reply);
     }
 }

@@ -217,6 +217,10 @@ impl Default for WindowConfig {
 #[serde(default)]
 pub struct Config {
     pub allow_multiple_instances: bool,
+    /// View → *Follow files after copy/move* (§8.3, issue #53): after a Copy to or Move to, show
+    /// the file at its new location rather than staying put. Off by default; tolerant of its
+    /// absence in a file written before it existed.
+    pub follow_files: bool,
     /// 1–100. Read as any TOML integer and clamped, so an out-of-range value isn't corrupt.
     #[serde(deserialize_with = "jpeg_quality_clamped")]
     pub jpeg_quality: u8,
@@ -233,6 +237,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             allow_multiple_instances: true,
+            follow_files: false,
             jpeg_quality: 92,
             magnify_factor: 2.0,
             window: WindowConfig::default(),
