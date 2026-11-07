@@ -27,7 +27,7 @@ use crate::decode::PendingDecode;
 use crate::editor::{DisplayPixels, Editor, ImageOp, MAX_EDIT_PIXELS, PanCursor};
 use crate::pan::PanGesture;
 use crate::paste::{Destination, Incoming, PendingIncoming};
-use crate::siblings::{Navigation, Step};
+use crate::siblings::{Jump, Navigation, Step};
 use crate::strings;
 use crate::tools::ToolId;
 use crate::ui::help_dialog::{self, HelpDialog};
@@ -221,6 +221,8 @@ struct Upgrade {
 enum Proceed {
     Open(PathBuf),
     Go(Direction),
+    /// Jump to the first or last Sibling (Home / End, §3.1), through the same path as [`Self::Go`].
+    Jump(Jump),
     Close,
     /// Copy the file into this Target folder (issue #53): acts on the file as it is on disk once
     /// the unsaved-changes flow has resolved.
@@ -392,6 +394,8 @@ impl LecoqApp {
             Command::OpenDialog => self.show_open_dialog(),
             Command::NextSibling => self.proceed_or_ask(Proceed::Go(Direction::Forward)),
             Command::PreviousSibling => self.proceed_or_ask(Proceed::Go(Direction::Backward)),
+            Command::FirstSibling => self.proceed_or_ask(Proceed::Jump(Jump::First)),
+            Command::LastSibling => self.proceed_or_ask(Proceed::Jump(Jump::Last)),
             Command::ZoomIn => self.zoom(ZOOM_STEP, None),
             Command::ZoomOut => self.zoom(1.0 / ZOOM_STEP, None),
             Command::ZoomAround { factor, around } => self.zoom(factor, Some(around)),
@@ -645,6 +649,11 @@ impl LecoqApp {
                 .path
                 .as_deref()
                 .is_some_and(|from| self.navigation.would_move(from, *direction)),
+            // Likewise, only when the jump would leave this Image (not already at that end).
+            Proceed::Jump(jump) => self
+                .path
+                .as_deref()
+                .is_some_and(|from| self.navigation.would_jump(from, *jump)),
             // Copy to / Move to always ask with unsaved changes (stories 20–23), so the edits
             // travel with the file (or are dropped on Discard).
             Proceed::Open(_) | Proceed::Close | Proceed::CopyTo(_) | Proceed::MoveTo(_) => true,
@@ -670,6 +679,7 @@ impl LecoqApp {
         match then {
             Proceed::Open(path) => self.open(&path),
             Proceed::Go(direction) => self.go(direction),
+            Proceed::Jump(jump) => self.jump(jump),
             Proceed::Close => {
                 self.closing = true;
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -747,7 +757,11 @@ impl LecoqApp {
             return;
         }
         // After Save As the window shows the new file: move on from it once its folder is known.
-        if matches!(self.save.after_save, Some(Proceed::Go(_))) && !self.navigation.is_scanned() {
+        if matches!(
+            self.save.after_save,
+            Some(Proceed::Go(_) | Proceed::Jump(_))
+        ) && !self.navigation.is_scanned()
+        {
             return;
         }
         let then = self.save.after_save.take().expect("checked above");
@@ -926,6 +940,18 @@ impl LecoqApp {
             Step::End(message) => self.post_message(message),
             step => self.take_step(step),
         }
+    }
+
+    /// Jump to the first or last Sibling (§3.1). Like [`Self::go`], callers come through
+    /// [`Self::proceed_or_ask`] for the unsaved-changes prompt. Nothing happens when already at
+    /// that end (or in a single-image folder): no move, no message.
+    fn jump(&mut self, jump: Jump) {
+        let Some(from) = self.path.clone() else {
+            return;
+        };
+        self.message = None;
+        let step = self.navigation.jump(&from, jump, self.display_box());
+        self.take_step(step);
     }
 
     /// Show the Sibling a move landed on (now, or once its decode arrives).

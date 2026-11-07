@@ -29,6 +29,33 @@ fn arrow_keys_move_through_siblings_in_glib_order() {
 }
 
 #[test]
+fn home_and_end_jump_to_the_first_and_last_sibling() {
+    let mut app = TestApp::open_in_folder(SMALL, &["a.jpg", "b.jpg", "c.jpg", "d.jpg"], "b.jpg");
+    assert_eq!(app.status("Sibling position"), "2 / 4");
+
+    app.press(Key::End);
+    assert_eq!(app.status("File name"), "d.jpg");
+    assert_eq!(app.status("Sibling position"), "4 / 4");
+
+    app.press(Key::Home);
+    assert_eq!(app.status("File name"), "a.jpg");
+    assert_eq!(app.status("Sibling position"), "1 / 4");
+}
+
+#[test]
+fn home_on_the_first_image_is_a_no_op() {
+    let mut app = TestApp::open_in_folder(SMALL, &["a.jpg", "b.jpg", "c.jpg"], "a.jpg");
+    assert_eq!(app.status_field("Message"), None);
+
+    app.press(Key::Home);
+
+    // No move, no wrap-around, and no "First image in folder" message (unlike ← at the start).
+    assert_eq!(app.status("File name"), "a.jpg");
+    assert_eq!(app.status("Sibling position"), "1 / 3");
+    assert_eq!(app.status_field("Message"), None);
+}
+
+#[test]
 fn wheel_down_is_next_and_wheel_up_is_previous() {
     let mut app = TestApp::open_in_folder(SMALL, &["a.jpg", "b.jpg", "c.jpg"], "b.jpg");
 

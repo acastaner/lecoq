@@ -18,6 +18,13 @@ enum Scan {
     Done(Option<SiblingList>),
 }
 
+/// An absolute jump through the Siblings: to the first or the last (Home / End, §3.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Jump {
+    First,
+    Last,
+}
+
 /// What a move to the next or previous Sibling did.
 pub enum Step {
     /// The Sibling was cached: show it now.
@@ -27,7 +34,8 @@ pub enum Step {
     Pending,
     /// Already at the end of the list: show this message.
     End(&'static str),
-    /// The Siblings aren't known yet (the scan hasn't finished).
+    /// Nothing to show: the scan hasn't finished, or a jump would stay put (already at that end,
+    /// or a single-image folder).
     NotReady,
 }
 
@@ -199,9 +207,20 @@ impl Navigation {
         sibling_towards(list, from, direction).is_some()
     }
 
+    /// Would [`Self::jump`] move to another Sibling (rather than stay put at that end, or wait for
+    /// the scan)? Like [`Self::would_move`], the unsaved-changes prompt (#35) only asks when it
+    /// would.
+    pub fn would_jump(&self, shown: &Path, jump: Jump) -> bool {
+        let (Scan::Done(Some(list)), Some(_)) = (&self.scan, &self.prefetch) else {
+            return false;
+        };
+        let from = self.target.as_deref().unwrap_or(shown);
+        jump_target(list, from, jump).is_some()
+    }
+
     /// Move one Sibling forward or back from the Image on screen (or from the pending target).
     pub fn go(&mut self, shown: &Path, direction: Direction, display_box: Size) -> Step {
-        let (Scan::Done(Some(list)), Some(prefetch)) = (&self.scan, &self.prefetch) else {
+        let (Scan::Done(Some(list)), Some(_)) = (&self.scan, &self.prefetch) else {
             return Step::NotReady;
         };
         let from = self.target.as_deref().unwrap_or(shown);
@@ -210,6 +229,34 @@ impl Navigation {
                 Direction::Forward => crate::strings::LAST_IMAGE,
                 Direction::Backward => crate::strings::FIRST_IMAGE,
             });
+        };
+        self.step_to(index, direction, display_box)
+    }
+
+    /// Jump to the first or last Sibling from the Image on screen (or the pending target). The
+    /// prefetch then faces the way browsing naturally continues: forward from the first, back from
+    /// the last. A no-op ([`Step::NotReady`]) when already at that end, or in a single-image folder.
+    pub fn jump(&mut self, shown: &Path, jump: Jump, display_box: Size) -> Step {
+        let (Scan::Done(Some(list)), Some(_)) = (&self.scan, &self.prefetch) else {
+            return Step::NotReady;
+        };
+        let from = self.target.as_deref().unwrap_or(shown);
+        let Some(index) = jump_target(list, from, jump) else {
+            return Step::NotReady;
+        };
+        let direction = match jump {
+            Jump::First => Direction::Forward,
+            Jump::Last => Direction::Backward,
+        };
+        self.step_to(index, direction, display_box)
+    }
+
+    /// Move to `index`, facing `direction` for the prefetch window: show it now if it is cached,
+    /// else start its decode and leave the previous Image on screen until [`Self::poll`] hands the
+    /// decode over. Shared by [`Self::go`] and [`Self::jump`].
+    fn step_to(&mut self, index: usize, direction: Direction, display_box: Size) -> Step {
+        let (Scan::Done(Some(list)), Some(prefetch)) = (&self.scan, &self.prefetch) else {
+            return Step::NotReady;
         };
         self.direction = direction;
         let path = list.get(index).expect("index in range").path.clone();
@@ -321,6 +368,24 @@ fn sibling_towards(list: &SiblingList, from: &Path, direction: Direction) -> Opt
     }
 }
 
+/// The index a [`Jump`] lands on, or `None` when it would stay put: an empty folder, or `from`
+/// already sitting at that end. No wrap-around. `from` may have left the list.
+fn jump_target(list: &SiblingList, from: &Path, jump: Jump) -> Option<usize> {
+    if list.is_empty() {
+        return None;
+    }
+    let target = match jump {
+        Jump::First => 0,
+        Jump::Last => list.len() - 1,
+    };
+    // Already there (a Sibling at `target`): nothing to do. A `from` that isn't a Sibling always
+    // moves, since it sits at neither end.
+    match list.locate(from) {
+        Ok(index) if index == target => None,
+        _ => Some(target),
+    }
+}
+
 fn folder_of(path: &Path) -> PathBuf {
     path.parent()
         .filter(|dir| !dir.as_os_str().is_empty())
@@ -333,4 +398,74 @@ fn window_paths(list: &SiblingList, index: usize, direction: Direction) -> Vec<P
         .into_iter()
         .filter_map(|i| list.get(i).map(|s| s.path.clone()))
         .collect()
+}
+
+/// The jump index maths, over real [`SiblingList`]s (the ordering is irrelevant, so a plain
+/// code-point order keeps the tests off any installed locale). [`Navigation::would_jump`] is just
+/// `jump_target(..).is_some()`, so these cover it too.
+#[cfg(test)]
+mod tests {
+    use std::cmp::Ordering;
+    use std::fs::File;
+    use std::sync::Arc;
+
+    use lecoq_siblings::order::NameOrder;
+    use lecoq_siblings::scan::scan;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    struct ByteOrder;
+    impl NameOrder for ByteOrder {
+        fn compare(&self, a: &str, b: &str) -> Ordering {
+            a.cmp(b)
+        }
+    }
+
+    /// Scan a fresh directory of `names` (empty `.jpg` files) into a [`SiblingList`].
+    fn list_of(names: &[&str]) -> (TempDir, SiblingList) {
+        let dir = TempDir::new().unwrap();
+        for name in names {
+            File::create(dir.path().join(name)).unwrap();
+        }
+        let list = scan(dir.path(), Arc::new(ByteOrder)).unwrap();
+        (dir, list)
+    }
+
+    #[test]
+    fn jump_lands_on_the_first_and_last_from_a_middle_image() {
+        let (dir, list) = list_of(&["a.jpg", "b.jpg", "c.jpg", "d.jpg"]);
+        let middle = dir.path().join("c.jpg");
+        assert_eq!(jump_target(&list, &middle, Jump::First), Some(0));
+        assert_eq!(
+            jump_target(&list, &middle, Jump::Last),
+            Some(list.len() - 1)
+        );
+    }
+
+    #[test]
+    fn jump_stays_put_at_the_matching_end_but_moves_from_the_far_one() {
+        let (dir, list) = list_of(&["a.jpg", "b.jpg", "c.jpg"]);
+        let (first, last) = (dir.path().join("a.jpg"), dir.path().join("c.jpg"));
+        assert_eq!(jump_target(&list, &first, Jump::First), None);
+        assert_eq!(jump_target(&list, &last, Jump::Last), None);
+        assert_eq!(jump_target(&list, &first, Jump::Last), Some(2));
+        assert_eq!(jump_target(&list, &last, Jump::First), Some(0));
+    }
+
+    #[test]
+    fn a_single_image_folder_never_moves() {
+        let (dir, list) = list_of(&["only.jpg"]);
+        let only = dir.path().join("only.jpg");
+        assert_eq!(jump_target(&list, &only, Jump::First), None);
+        assert_eq!(jump_target(&list, &only, Jump::Last), None);
+    }
+
+    #[test]
+    fn an_empty_folder_never_moves() {
+        let (_dir, list) = list_of(&[]);
+        let ghost = Path::new("/nowhere/ghost.jpg");
+        assert_eq!(jump_target(&list, ghost, Jump::First), None);
+        assert_eq!(jump_target(&list, ghost, Jump::Last), None);
+    }
 }

@@ -48,6 +48,10 @@ pub enum Command {
     NextSibling,
     /// Show the previous Sibling (§3.1: wheel up, ←).
     PreviousSibling,
+    /// Show the first Sibling (§3.1: Home), in the order next/previous walk.
+    FirstSibling,
+    /// Show the last Sibling (§3.1: End), in the order next/previous walk.
+    LastSibling,
     /// Show the native open dialog and open the file chosen in it (Ctrl+O, §3.5).
     OpenDialog,
     /// Zoom in one step around the canvas centre (`+`, §3.1).

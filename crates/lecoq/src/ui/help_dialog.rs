@@ -86,6 +86,8 @@ pub fn shortcuts(ctx: &egui::Context) -> Vec<(String, String)> {
         (strings::KEY_F11.to_owned(), strings::DOES_FULLSCREEN),
         (strings::KEY_RIGHT.to_owned(), strings::DOES_NEXT),
         (strings::KEY_LEFT.to_owned(), strings::DOES_PREVIOUS),
+        (strings::KEY_HOME.to_owned(), strings::DOES_FIRST),
+        (strings::KEY_END.to_owned(), strings::DOES_LAST),
         (strings::KEY_PLUS.to_owned(), strings::DOES_ZOOM_IN),
         (strings::KEY_MINUS.to_owned(), strings::DOES_ZOOM_OUT),
         (strings::KEY_ZERO.to_owned(), strings::DOES_FIT),
