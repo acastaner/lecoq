@@ -627,6 +627,13 @@ impl Editor {
         self.edited.as_mut().filter(|e| !e.doc.in_gesture())
     }
 
+    /// The zoom upgrade needs the full-resolution pixels (#57): run the one shared decode if it
+    /// isn't running or landed already. The same decode as the first tool use, so whichever asks
+    /// first runs it and the other adopts its pixels through [`Document::full_resolution`].
+    pub fn request_full_decode(&mut self) {
+        self.start_full_decode();
+    }
+
     /// §4.7: the first tool use starts the full-resolution decode, in the background.
     fn start_full_decode(&mut self) {
         let Some(e) = &mut self.edited else {

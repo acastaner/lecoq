@@ -256,6 +256,14 @@ pub fn decode_for_display(path: &Path, max: Size) -> Result<DisplayImage, Decode
     Ok(decode(path)?.into_display(max))
 }
 
+/// Reduce `pixels` to fit within `max`, keeping the aspect ratio and never enlarging: the zoom
+/// texture built from the shared full-resolution decode, capped at the GPU's largest texture
+/// (#57). A no-op clone when the pixels already fit.
+pub fn reduced_to_fit(pixels: &Pixels, max: Size) -> Pixels {
+    let from = Size::new(pixels.width, pixels.height);
+    resize(pixels.clone(), from, fit_within(from, max))
+}
+
 /// The largest size with `size`'s aspect ratio that fits in `max`, never above `size` itself.
 pub fn fit_within(size: Size, max: Size) -> Size {
     let scale = (f64::from(max.width) / f64::from(size.width))
