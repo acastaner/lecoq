@@ -116,8 +116,8 @@ pub struct Decoded {
     stored: Size,
     /// The EXIF orientation (§5.2), applied by [`Decoded::into_display`].
     orientation: Orientation,
-    /// The embedded ICC profile, if any. Converted to sRGB by [`Decoded::into_display`] unless it
-    /// already is sRGB (§5.2).
+    /// The embedded ICC profile, if any. [`Decoded::into_display`] prepares a [`colour::Converter`]
+    /// from it and converts the display pixels to sRGB unless the profile already is sRGB (§5.2).
     icc: Option<Vec<u8>>,
     /// See [`DisplayImage::may_animate`].
     may_animate: bool,
@@ -134,8 +134,21 @@ impl Decoded {
     }
 
     /// Reduce to fit inside `max` (physical pixels), keeping the aspect ratio, never enlarging;
-    /// then apply the orientation and convert to sRGB.
+    /// then apply the orientation and convert to sRGB. The colour converter is prepared from this
+    /// decode's profile, once, here.
     pub fn into_display(self, max: Size) -> DisplayImage {
+        let converter = colour::Converter::prepare(self.icc.as_deref());
+        self.into_display_with(max, &converter)
+    }
+
+    /// As [`Decoded::into_display`], but with a colour `converter` prepared elsewhere and reused:
+    /// an animation prepares one for the whole file and passes it for every frame, so the profile
+    /// is parsed once, not once per frame (#60). This decode's own `icc` is not consulted.
+    pub(crate) fn into_display_with(
+        self,
+        max: Size,
+        converter: &colour::Converter,
+    ) -> DisplayImage {
         let original_size = self.size();
         let target = fit_within(original_size, max);
         let stored_target = if swaps_axes(self.orientation) {
@@ -147,9 +160,7 @@ impl Decoded {
         if self.orientation != Orientation::NoTransforms {
             pixels = orient(pixels, stored_target, self.orientation);
         }
-        if let Some(icc) = &self.icc {
-            colour::to_srgb(icc, &mut pixels);
-        }
+        converter.convert(&mut pixels);
         DisplayImage {
             original_size,
             size: target,
