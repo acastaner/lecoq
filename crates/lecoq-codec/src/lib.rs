@@ -66,9 +66,6 @@ pub struct DisplayImage {
     pub size: Size,
     /// Premultiplied, upload-ready pixels, shared with the cache and the shown Image's texture.
     pub pixels: Arc<Pixels>,
-    /// The source had no alpha channel, so every pixel is opaque (alpha 255) and straight alpha
-    /// equals premultiplied: the common case, uploaded with no premultiply pass (#56).
-    pub opaque: bool,
     /// The file is a GIF or WebP, so it may be an animation: [`frames`] tells. The pixels are its
     /// first frame.
     pub may_animate: bool,
@@ -87,21 +84,19 @@ impl DisplayImage {
 }
 
 /// Wrap straight, oriented, colour-converted `pixels` (displayed `size`, original `original_size`)
-/// as an upload-ready [`DisplayImage`]: premultiply exactly the way egui does and flag whether the
-/// source was opaque. For RGB this only appends an opaque alpha (no premultiply arithmetic); for
-/// straight RGBA it premultiplies once, here on the pool thread (#56).
+/// as an upload-ready [`DisplayImage`]: premultiply exactly the way egui does. For RGB this only
+/// appends an opaque alpha (no premultiply arithmetic); for straight RGBA it premultiplies once,
+/// here on the pool thread (#56).
 fn upload_ready(
     pixels: Pixels,
     original_size: Size,
     size: Size,
     may_animate: bool,
 ) -> DisplayImage {
-    let opaque = matches!(pixels.data, PixelData::Rgb(_));
     DisplayImage {
         original_size,
         size,
         pixels: Arc::new(pixels.premultiplied()),
-        opaque,
         may_animate,
     }
 }
