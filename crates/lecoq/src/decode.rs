@@ -119,9 +119,7 @@ impl PendingFullDecode {
 /// Decode `path` at full resolution: oriented and colour-converted like the display decode, but
 /// not reduced.
 pub(crate) fn decode_full(path: &Path) -> FullDecodeResult {
-    lecoq_codec::decode(path).map(|d| {
-        let size = d.size();
-        // One pixel type end to end (#64): the decode already lands in `lecoq_core::Pixels`.
-        d.into_display(size).pixels
-    })
+    // Full-resolution pixels stay straight (not reduced, not premultiplied): the editor and the
+    // save encoders work from them (§5.3, §7.2). The display path premultiplies; this one doesn't.
+    lecoq_codec::decode(path).map(lecoq_codec::Decoded::into_full)
 }
