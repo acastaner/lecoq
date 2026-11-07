@@ -59,7 +59,7 @@ const MIN_CHARS: &str = "00000";
 /// The laid-out size and what it was laid out with.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Layout {
-    font: String,
+    font: std::sync::Arc<str>,
     size: f32,
     /// The text's laid-out width and height.
     width: f32,
@@ -97,7 +97,7 @@ impl Text {
             text: text.to_owned(),
             width: None,
             layout: Layout {
-                font: String::new(),
+                font: std::sync::Arc::from(""),
                 size: 0.0,
                 width: 0.0,
                 height: 0.0,
