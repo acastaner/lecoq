@@ -33,6 +33,6 @@ pub fn draw(canvas: &sk::Canvas, shape: &Text, style: &Style) {
 /// The drawn content bounds (the text box grown by the font size, which covers the shadow/ascenders
 /// Skia may paint past the box): the single source both `draw` (for the `with_shadow` layer) and
 /// [`crate::bounds`] (for the dirty region) consume, so they cannot drift.
-pub(crate) fn content_bounds(shape: &Text, style: &Style) -> sk::Rect {
+pub(super) fn content_bounds(shape: &Text, style: &Style) -> sk::Rect {
     super::outset(crate::rect(shape.bounds()), style.font_size)
 }

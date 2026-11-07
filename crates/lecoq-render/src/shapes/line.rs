@@ -20,7 +20,7 @@ pub fn draw(canvas: &sk::Canvas, shape: &Line, style: &Style) {
 /// The drawn content bounds (the endpoints' box grown by the stroke): the single source both `draw`
 /// (for the `with_shadow` layer) and [`crate::bounds`] (for the dirty region) consume, so they
 /// cannot drift.
-pub(crate) fn content_bounds(shape: &Line, style: &Style) -> sk::Rect {
+pub(super) fn content_bounds(shape: &Line, style: &Style) -> sk::Rect {
     let bounds = sk::Rect::from_ltrb(
         shape.from.x.min(shape.to.x),
         shape.from.y.min(shape.to.y),

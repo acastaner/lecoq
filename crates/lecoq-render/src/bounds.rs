@@ -1,13 +1,13 @@
 //! An Annotation's drawn bounds and whether it is an opaque neighbourhood effect: render-crate
 //! knowledge the editor needs to re-render only the region a gesture changes (#46, §7.2).
 //!
-//! The drawn bounds are the rectangle of Image pixels an Annotation's `draw` can touch: its
-//! geometry grown for the stroke, for an arrow's head, and — when the shadow style is on — for the
-//! shadow's spread. This is the same bound [`crate::effects::with_shadow`] confines each shape's
-//! save-layer to, so the two must grow a shape the same way; the shape goldens and the dirty-region
-//! equivalence tests guard that they do.
+//! The drawn bounds are the rectangle of Image pixels an Annotation's `draw` can touch: its drawn
+//! content bounds (`shapes::content_bounds`, the same bound each shape's `draw` confines its
+//! save-layer to, so the dirty region and the shadow layer cannot drift) grown, when the shadow
+//! style is on, for the shadow's spread. This module adds only that dirty-region policy; the
+//! per-shape geometry lives next to each shape's `draw` in `shapes`.
 
-use lecoq_core::{Annotation, AnnotationShape, HighlightMode, Rect, Shape, Style};
+use lecoq_core::{Annotation, AnnotationShape, HighlightMode, Rect, Shape};
 
 use crate::effects::SHADOW_SPREAD;
 use crate::shapes;
@@ -16,7 +16,7 @@ use crate::shapes;
 /// superset of the touched pixels is always safe for the dirty region.
 pub fn drawn_bounds(annotation: &Annotation) -> Rect {
     let style = &annotation.style;
-    let content = content_bounds(&annotation.shape, style);
+    let content = crate::core_rect(shapes::content_bounds(&annotation.shape, style));
     // Effect types (Highlight, Obfuscate) never draw a shadow, whatever the style says.
     let spread = if style.shadow && !annotation.shape.needs_pixels_below() {
         SHADOW_SPREAD
@@ -36,33 +36,6 @@ pub fn is_opaque_effect(annotation: &Annotation) -> bool {
         AnnotationShape::Obfuscate(_) => true,
         AnnotationShape::Highlight(_) => annotation.style.highlight_mode == HighlightMode::Magnify,
         _ => false,
-    }
-}
-
-/// The bound each shape's `draw` grows its geometry to before the shadow — the rectangle passed to
-/// [`crate::effects::with_shadow`]. For every shape that both derives, the one per-shape
-/// `content_bounds` in its drawing module is the single source, so the dirty region and the shadow
-/// layer cannot drift apart.
-fn content_bounds(shape: &AnnotationShape, style: &Style) -> Rect {
-    match shape {
-        AnnotationShape::Rectangle(s) => {
-            crate::core_rect(shapes::rectangle::content_bounds(s, style))
-        }
-        AnnotationShape::Ellipse(s) => crate::core_rect(shapes::ellipse::content_bounds(s, style)),
-        AnnotationShape::Line(s) => crate::core_rect(shapes::line::content_bounds(s, style)),
-        AnnotationShape::Arrow(s) => crate::core_rect(shapes::arrow::content_bounds(s, style)),
-        // The smoothed path stays within the points' convex hull, so the points' bounds are a
-        // superset of the drawn curve's: the draw site bounds its layer to the tighter path, so this
-        // deliberately differs and stays a separate (conservative) derivation.
-        AnnotationShape::Freehand(s) => s.bounds().expand(style.thickness),
-        AnnotationShape::StepCounter(s) => {
-            crate::core_rect(shapes::step_counter::content_bounds(s, style))
-        }
-        AnnotationShape::Text(s) => crate::core_rect(shapes::text::content_bounds(s, style)),
-        AnnotationShape::Inset(s) => crate::core_rect(shapes::inset::content_bounds(s, style)),
-        // Effects draw within their own box (clipped to the Image when composited).
-        AnnotationShape::Highlight(s) => s.rect,
-        AnnotationShape::Obfuscate(s) => s.rect,
     }
 }
 

@@ -44,7 +44,7 @@ pub fn draw(canvas: &sk::Canvas, shape: &Arrow, style: &Style) {
 /// where the heads sit, or the stroke half-width when that is larger. The single source both `draw`
 /// (for the `with_shadow` layer) and [`crate::bounds`] (for the dirty region) consume, so they
 /// cannot drift.
-pub(crate) fn content_bounds(shape: &Arrow, style: &Style) -> sk::Rect {
+pub(super) fn content_bounds(shape: &Arrow, style: &Style) -> sk::Rect {
     let bounds = sk::Rect::from_ltrb(
         shape.from.x.min(shape.to.x),
         shape.from.y.min(shape.to.y),

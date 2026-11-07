@@ -39,7 +39,7 @@ pub fn draw(canvas: &sk::Canvas, shape: &StepCounter, style: &Style, number: u32
 
 /// The drawn content bounds (the disc grown by the stroke): the single source both `draw` (for the
 /// `with_shadow` layer) and [`crate::bounds`] (for the dirty region) consume, so they cannot drift.
-pub(crate) fn content_bounds(shape: &StepCounter, style: &Style) -> sk::Rect {
+pub(super) fn content_bounds(shape: &StepCounter, style: &Style) -> sk::Rect {
     super::outset(crate::rect(shape.disc(style)), style.thickness)
 }
 

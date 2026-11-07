@@ -23,6 +23,6 @@ pub fn draw(canvas: &sk::Canvas, shape: &Rectangle, style: &Style) {
 
 /// The drawn content bounds (the rect grown by the stroke): the single source both `draw` (for the
 /// `with_shadow` layer) and [`crate::bounds`] (for the dirty region) consume, so they cannot drift.
-pub(crate) fn content_bounds(shape: &Rectangle, style: &Style) -> sk::Rect {
+pub(super) fn content_bounds(shape: &Rectangle, style: &Style) -> sk::Rect {
     super::outset(crate::rect(shape.rect), style.thickness)
 }
