@@ -413,9 +413,13 @@ impl LecoqApp {
                 if let Property::Magnification(factor) = property {
                     self.set_magnify_factor(factor);
                 }
-                self.editor.set_property(property, merge);
-                // §4.3, §8.3: the tools' defaults persist between runs.
-                let styles = self.editor.tool_styles_config();
+                let changed = self.editor.set_property(property, merge);
+                // §4.3, §8.3: the tools' defaults persist between runs. Only the tools the change
+                // applied to are re-serialised, not every tool on every tick (#61).
+                let styles: Vec<_> = changed
+                    .iter()
+                    .filter_map(|&tool| self.editor.tool_style_config(tool))
+                    .collect();
                 self.update_config(|config| config.tools.extend(styles));
             }
             Command::Save => self.save(),
@@ -873,17 +877,22 @@ impl LecoqApp {
         if self.fullscreen.wanted || fullscreen == Some(true) || minimised == Some(true) {
             return;
         }
-        self.update_config(|config| {
-            if let Some(maximised) = maximised {
-                config.window.maximised = maximised;
-            }
-            if !config.window.maximised
-                && let Some(inner) = inner
-            {
-                config.window.width = inner.width().round();
-                config.window.height = inner.height().round();
-            }
-        });
+        // Work out the window this frame would record and compare the three fields first, so an
+        // unchanged window (every frame of an idle app) touches nothing. The settings-change path
+        // clones and compares the whole Config, so it must run only on a real change (#61).
+        let mut window = self.config.window;
+        if let Some(maximised) = maximised {
+            window.maximised = maximised;
+        }
+        if !window.maximised
+            && let Some(inner) = inner
+        {
+            window.width = inner.width().round();
+            window.height = inner.height().round();
+        }
+        if window != self.config.window {
+            self.update_config(|config| config.window = window);
+        }
     }
 
     /// Ctrl+O. Only one open dialog at a time: asking again while it is up does nothing.

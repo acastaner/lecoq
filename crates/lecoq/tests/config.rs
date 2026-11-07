@@ -243,3 +243,27 @@ fn no_file_gives_the_defaults() {
     assert!(!config.window.maximised);
     assert_eq!(config.magnify_factor, 2.0);
 }
+
+#[test]
+fn frames_without_a_window_change_do_not_rewrite_the_config() {
+    let store = Arc::new(MemoryConfigStore::default());
+    let mut app = TestApp::with_platform(platform_with(&store));
+
+    // One real resize, settled through the debounce: the size is on record.
+    app.resize_window(egui::vec2(1280.0, 800.0), false);
+    app.settle();
+    assert_eq!(store.write_count(), 1);
+
+    // Many further frames at the same size (an idle app) must schedule no further write: window
+    // tracking compares the window fields and touches the settings only on a change (#61).
+    for _ in 0..12 {
+        app.resize_window(egui::vec2(1280.0, 800.0), false);
+    }
+    app.settle();
+    assert_eq!(
+        store.write_count(),
+        1,
+        "an unchanged window must not rewrite config.toml"
+    );
+    assert_eq!(app.harness.state().config().window.width, 1280.0);
+}
