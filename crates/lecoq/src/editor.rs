@@ -72,7 +72,11 @@ struct CompositeTexture {
     key: (u64, u64, View),
     texture: egui::TextureHandle,
     dest: egui::Rect,
-    pixels: Composite,
+    /// The view-sized RGBA-premultiplied buffer the composite is rendered straight into, shared
+    /// with `texture`: uploading clones this `Arc`, so no copy happens between render and upload
+    /// (#55). `image.as_raw_mut()` is the byte buffer the renderer and the fast path write into,
+    /// and it is kept between frames so a same-size view reuses the allocation.
+    image: Arc<egui::ColorImage>,
     /// Each Annotation's drawn bounds (Image pixels) as of this composite, in z-order: the
     /// dirty-region fast path diffs them against the next frame's to find what changed (#46).
     bounds: Vec<(AnnotationId, Rect)>,
@@ -301,9 +305,16 @@ impl Editor {
         self.rubber_band
     }
 
-    pub fn composite(&self) -> Option<&Composite> {
-        let edited = self.edited.as_ref()?;
-        edited.composite.as_ref().map(|c| &c.pixels)
+    /// The last Skia composite of the canvas, as an owned [`Composite`] (§7.2). The pixels live in
+    /// the texture's shared `ColorImage` now (#55); this reads them back for tests and inspection,
+    /// so it is off the render path.
+    pub fn composite(&self) -> Option<Composite> {
+        let c = self.edited.as_ref()?.composite.as_ref()?;
+        Some(Composite {
+            width: c.image.size[0] as u32,
+            height: c.image.size[1] as u32,
+            rgba_premultiplied: c.image.as_raw().to_vec(),
+        })
     }
 
     /// The style the property bar shows when nothing is selected: the active tool's.
@@ -1208,18 +1219,23 @@ impl Editor {
                 .filter(|eb| overlaps_partially(eb, &dirty_image))
                 .collect();
             let c = e.composite.as_mut().expect("fast path has a composite");
+            // The freeze-restore and the write-back both work on the shared buffer's bytes
+            // (#55). `make_mut` is free here: the texture manager consumed last frame's delta, so
+            // the `Arc` is unique.
+            let image = Arc::make_mut(&mut c.image);
+            let full_width = image.size[0];
             for eb in &frozen {
-                restore_region(&mut sub_px, &c.pixels, *eb, view, sub);
+                restore_region(&mut sub_px, image.as_raw(), full_width, *eb, view, sub);
             }
             // Write the sub-rect back into the cached pixels so the cache stays consistent, and
             // upload only that sub-rect to the texture.
-            blit(&mut c.pixels, &sub_px, sub);
-            let image = egui::ColorImage::from_rgba_premultiplied(
+            blit(image.as_raw_mut(), full_width, &sub_px, sub);
+            let sub_image = egui::ColorImage::from_rgba_premultiplied(
                 [sub_px.width as usize, sub_px.height as usize],
                 &sub_px.rgba_premultiplied,
             );
             c.texture
-                .set_partial([sub.x0, sub.y0], image, egui::TextureOptions::LINEAR);
+                .set_partial([sub.x0, sub.y0], sub_image, egui::TextureOptions::LINEAR);
             c.key = key;
             c.dest = dest;
             c.bounds = new_bounds;
@@ -1227,28 +1243,40 @@ impl Editor {
             return Some((c.texture.id(), c.dest));
         }
 
-        // Full path: render the whole visible region and reset the gesture's dirty-tracking state.
-        let pixels = renderer.composite(&e.doc, &source, view);
-        let image = egui::ColorImage::from_rgba_premultiplied(
-            [pixels.width as usize, pixels.height as usize],
-            &pixels.rgba_premultiplied,
-        );
+        // Full path: render the whole visible region straight into the texture's buffer (#55) and
+        // reset the gesture's dirty-tracking state. The buffer is kept between frames; a view of the
+        // same size reuses the allocation, a changed size reallocates. A fresh allocation is
+        // transparent, so the renderer skips the clear; a reused one is cleared first.
+        let size = [view.width.max(1) as usize, view.height.max(1) as usize];
         match &mut e.composite {
             Some(c) => {
-                c.texture.set(image, egui::TextureOptions::LINEAR);
+                let reallocated = c.image.size != size;
+                if reallocated {
+                    c.image = Arc::new(egui::ColorImage::filled(size, egui::Color32::TRANSPARENT));
+                }
+                let image = Arc::make_mut(&mut c.image);
+                renderer.composite_into(&e.doc, &source, view, image.as_raw_mut(), reallocated);
+                c.texture
+                    .set(Arc::clone(&c.image), egui::TextureOptions::LINEAR);
                 c.key = key;
                 c.dest = dest;
-                c.pixels = pixels;
                 c.bounds = new_bounds;
                 c.froze = false;
             }
             None => {
-                let texture = ctx.load_texture("composite", image, egui::TextureOptions::LINEAR);
+                let mut image = egui::ColorImage::filled(size, egui::Color32::TRANSPARENT);
+                renderer.composite_into(&e.doc, &source, view, image.as_raw_mut(), true);
+                let image = Arc::new(image);
+                let texture = ctx.load_texture(
+                    "composite",
+                    Arc::clone(&image),
+                    egui::TextureOptions::LINEAR,
+                );
                 e.composite = Some(CompositeTexture {
                     key,
                     texture,
                     dest,
-                    pixels,
+                    image,
                     bounds: new_bounds,
                     froze: false,
                 });
@@ -1347,25 +1375,26 @@ fn view_scale(view: View) -> (f32, f32) {
     )
 }
 
-/// Copy `src` (sized to `at`) into `dst` at `at`'s top-left corner. Both are RGBA, row-major.
-fn blit(dst: &mut Composite, src: &Composite, at: SubRect) {
-    let dw = dst.width as usize;
+/// Copy `src` (sized to `at`) into `dst` at `at`'s top-left corner. `dst` is the full composite's
+/// RGBA bytes, `dst_width` pixels wide; both are RGBA, row-major (#55: `dst` is the shared buffer).
+fn blit(dst: &mut [u8], dst_width: usize, src: &Composite, at: SubRect) {
     let sw = src.width as usize;
     let len = sw * 4;
     for j in 0..(at.y1 - at.y0) {
-        let drow = ((at.y0 + j) * dw + at.x0) * 4;
+        let drow = ((at.y0 + j) * dst_width + at.x0) * 4;
         let srow = j * len;
-        dst.rgba_premultiplied[drow..drow + len]
-            .copy_from_slice(&src.rgba_premultiplied[srow..srow + len]);
+        dst[drow..drow + len].copy_from_slice(&src.rgba_premultiplied[srow..srow + len]);
     }
 }
 
 /// Restore the pixels of `region` (Image pixels) in the freshly rendered `sub` from the `previous`
-/// full composite — the freeze that keeps an opaque effect intact for a frame (#46). `sub` covers
-/// the device rectangle `at`; only the part of `region` inside it is restored.
+/// full composite's RGBA bytes (`previous_width` pixels wide) — the freeze that keeps an opaque
+/// effect intact for a frame (#46). `sub` covers the device rectangle `at`; only the part of
+/// `region` inside it is restored.
 fn restore_region(
     sub: &mut Composite,
-    previous: &Composite,
+    previous: &[u8],
+    previous_width: usize,
     region: Rect,
     view: View,
     at: SubRect,
@@ -1380,14 +1409,12 @@ fn restore_region(
     if x1 <= x0 || y1 <= y0 {
         return;
     }
-    let pw = previous.width as usize;
     let sw = sub.width as usize;
     let len = (x1 - x0) * 4;
     for y in y0..y1 {
-        let prow = (y * pw + x0) * 4;
+        let prow = (y * previous_width + x0) * 4;
         let srow = ((y - at.y0) * sw + (x0 - at.x0)) * 4;
-        sub.rgba_premultiplied[srow..srow + len]
-            .copy_from_slice(&previous.rgba_premultiplied[prow..prow + len]);
+        sub.rgba_premultiplied[srow..srow + len].copy_from_slice(&previous[prow..prow + len]);
     }
 }
 

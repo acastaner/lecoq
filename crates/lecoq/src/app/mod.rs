@@ -482,7 +482,7 @@ impl LecoqApp {
     }
 
     /// The last Skia composite of the canvas, while there are Annotations (§7.2).
-    pub fn composite(&self) -> Option<&Composite> {
+    pub fn composite(&self) -> Option<Composite> {
         self.editor.composite()
     }
 

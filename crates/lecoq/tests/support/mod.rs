@@ -159,6 +159,24 @@ impl TestApp {
         Self { harness, dir }
     }
 
+    /// Open `name` in a headless App with a custom logical window size (1 point = 1 pixel), for the
+    /// #55 pan-frame measurement, which wants a ~2560×1440 canvas. The harness is built empty (no
+    /// texture uploaded yet), so the default 2048 texture-side cap can be raised before the display
+    /// Image and composite — both wider than 2048 at this size — are uploaded (a real GPU reports
+    /// 8k+); then the Image is opened.
+    pub fn open_fixture_sized(name: &str, size: egui::Vec2) -> Self {
+        let launch = launch_for_tests(Platform::in_memory());
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut harness = Harness::builder()
+            .with_size(size)
+            .build_eframe(move |cc| LecoqApp::new(cc, launch));
+        harness.input_mut().max_texture_side = Some(16384);
+        let mut app = Self { harness, dir };
+        let path = app.add_fixtures(&[name]);
+        app.open(path);
+        app
+    }
+
     /// Start a headless App the way `lecoq <path>` starts: the first-image decode is already
     /// running when the app is created (§1.3). Copies the fixtures first; the first one is launched.
     /// Doesn't wait: call [`Self::settle`] (or step the harness) yourself.
