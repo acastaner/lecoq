@@ -93,7 +93,7 @@ impl TextSession {
             return;
         }
         if let Some((spec_text, origin, style, width)) = self.layout(doc) {
-            let spec = spec(&spec_text, &style, width);
+            let spec = spec(spec_text, style, width);
             self.cursor = lecoq_render::text::index_at(&spec, p.x - origin.x, p.y - origin.y)
                 .min(self.text.len());
         }
@@ -102,7 +102,9 @@ impl TextSession {
     /// Apply this frame's keyboard and input-method events. Returns true when the session should
     /// finish (Esc).
     pub fn input(&mut self, doc: &mut Document, events: &[Event]) -> bool {
-        let before = (self.text.clone(), self.preedit.clone());
+        // One snapshot to detect a change (the old code also cloned again to compare: #66).
+        let before_text = self.text.clone();
+        let before_preedit = self.preedit.clone();
         let mut finish = false;
         for event in events {
             match event {
@@ -124,7 +126,7 @@ impl TextSession {
                 _ => {}
             }
         }
-        if (self.text.clone(), self.preedit.clone()) != before {
+        if self.text != before_text || self.preedit != before_preedit {
             self.sync(doc);
         }
         finish
@@ -152,7 +154,7 @@ impl TextSession {
     /// Where the caret (and the pre-edit underline) go, in Image pixels.
     pub fn caret(&self, doc: &Document) -> Option<CaretPaint> {
         let (text, origin, style, width) = self.layout(doc)?;
-        let spec = spec(&text, &style, width);
+        let spec = spec(text, style, width);
         let at = |index: usize| {
             let (x, top, h) = lecoq_render::text::caret(&spec, index);
             Rect::from_min_size(Point::new(origin.x + x, origin.y + top), 0.0, h)
@@ -187,18 +189,14 @@ impl TextSession {
         }
     }
 
-    /// The shown text, where it starts, its style and its fixed width.
-    fn layout(&self, doc: &Document) -> Option<(String, Point, Style, Option<f32>)> {
+    /// The shown text, where it starts, its style and its fixed width. Borrows from the Document
+    /// rather than cloning the text and the `Style` on every layout (#66).
+    fn layout<'d>(&self, doc: &'d Document) -> Option<(&'d str, Point, &'d Style, Option<f32>)> {
         let a = doc.annotation(self.id)?;
         let AnnotationShape::Text(t) = &a.shape else {
             return None;
         };
-        Some((
-            t.text().to_owned(),
-            t.text_origin(),
-            a.style.clone(),
-            t.width(),
-        ))
+        Some((t.text(), t.text_origin(), &a.style, t.width()))
     }
 
     fn insert(&mut self, s: &str) {
@@ -283,7 +281,7 @@ impl TextSession {
         let Some((text, _, style, width)) = self.layout(doc) else {
             return;
         };
-        let spec = spec(&text, &style, width);
+        let spec = spec(text, style, width);
         let (x, top, h) = lecoq_render::text::caret(&spec, self.cursor);
         let y = if down { top + h * 1.5 } else { top - h * 0.5 };
         if y < 0.0 {

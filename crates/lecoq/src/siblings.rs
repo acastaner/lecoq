@@ -25,6 +25,28 @@ pub enum Jump {
     Last,
 }
 
+/// The Sibling position shown in the status bar (§2). Its `Display` is the exact text the status
+/// bar shows; the app caches it keyed on this value (#66).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Position {
+    /// `? / ?`: the scan has not finished.
+    Scanning,
+    /// `n / N`: Image `n` of `N`.
+    At(usize, usize),
+    /// `– / N`: an Image that is not one of the Siblings (a hidden file, say).
+    Outside(usize),
+}
+
+impl std::fmt::Display for Position {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Position::Scanning => write!(f, "? / ?"),
+            Position::At(n, total) => write!(f, "{n} / {total}"),
+            Position::Outside(total) => write!(f, "– / {total}"),
+        }
+    }
+}
+
 /// What a move to the next or previous Sibling did.
 pub enum Step {
     /// The Sibling was cached: show it now.
@@ -288,15 +310,16 @@ impl Navigation {
         );
     }
 
-    /// The status-bar position (§2): `n / N`, `? / ?` until the scan has finished, `– / N` for an
-    /// Image that isn't one of the Siblings (a hidden file, say).
-    pub fn position(&self, shown: &Path) -> String {
+    /// The status-bar position (§2). A small, cheap-to-compare value (no allocation): the app caches
+    /// the formatted label and re-renders it only when this changes (#66), and [`Position`]'s
+    /// `Display` is the single source of the shown text, so the label and the cache key cannot drift.
+    pub fn position(&self, shown: &Path) -> Position {
         match &self.scan {
             Scan::Done(Some(list)) => match list.locate(shown) {
-                Ok(i) => format!("{} / {}", i + 1, list.len()),
-                Err(_) => format!("– / {}", list.len()),
+                Ok(i) => Position::At(i + 1, list.len()),
+                Err(_) => Position::Outside(list.len()),
             },
-            _ => "? / ?".to_owned(),
+            _ => Position::Scanning,
         }
     }
 

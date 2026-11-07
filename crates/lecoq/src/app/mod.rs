@@ -31,7 +31,7 @@ use crate::decode::{self, DecodeResult};
 use crate::editor::{DisplayPixels, Editor, ImageOp, MAX_EDIT_PIXELS, PanCursor};
 use crate::pan::PanGesture;
 use crate::paste::{Destination, Incoming, PendingIncoming};
-use crate::siblings::{Jump, Navigation, Step};
+use crate::siblings::{Jump, Navigation, Position, Step};
 use crate::strings;
 use crate::tools::ToolId;
 use crate::ui::help_dialog::{self, HelpDialog};
@@ -324,6 +324,18 @@ pub struct LecoqApp {
     /// The Copy to / Move to warning modal while it is up (ADR 0009): the outcome-specific message
     /// to show. Set for every outcome that did not place the file; successes keep the status bar.
     file_op_warning: Option<String>,
+    /// The status bar's formatted position and zoom labels, cached so they are re-rendered only
+    /// when the value behind them changes, not allocated every frame (#66).
+    status_labels: StatusLabels,
+}
+
+/// Cached status-bar strings: each is kept until the value it shows changes (#66).
+#[derive(Default)]
+struct StatusLabels {
+    /// The Sibling position label and the [`Position`] it was rendered from.
+    position: Option<(Position, String)>,
+    /// The zoom label and the [`Zoom`] it was rendered from.
+    zoom: Option<(Zoom, String)>,
 }
 
 impl LecoqApp {
@@ -383,6 +395,7 @@ impl LecoqApp {
             last_target,
             context_menu: None,
             file_op_warning: None,
+            status_labels: StatusLabels::default(),
         };
         if from_clipboard {
             app.execute(Command::Paste);
@@ -1774,20 +1787,19 @@ impl LecoqApp {
     }
 
     /// The text the canvas shows instead of an Image: the decode error, or the empty-window hint.
-    fn canvas_message(&self) -> Option<String> {
+    fn canvas_message(&self) -> Option<std::borrow::Cow<'static, str>> {
+        use std::borrow::Cow;
         if self.shown.is_some() {
             return None;
         }
         if let Some(error) = &self.error {
-            return Some(error.clone());
+            // The error state is rare; the common idle branch below borrows the static hint.
+            return Some(Cow::Owned(error.clone()));
         }
         // While the first Image decodes, the canvas stays blank rather than flash the hint.
-        self.pending.is_none().then(|| {
-            strings::empty_window_hint(
-                &crate::ui::shortcut_text(&self.ctx, &crate::input::OPEN),
-                &crate::ui::shortcut_text(&self.ctx, &crate::input::PASTE),
-            )
-        })
+        self.pending
+            .is_none()
+            .then(|| Cow::Borrowed(empty_window_hint(&self.ctx)))
     }
 
     /// A pixel of the display-size decode on screen (after orientation and colour conversion):
@@ -1817,13 +1829,30 @@ impl LecoqApp {
         Some(color)
     }
 
+    /// Refresh the cached status-bar labels (#66): the position and zoom strings are re-rendered
+    /// only when the value behind them changes, not allocated every frame.
+    fn refresh_status_labels(&mut self) {
+        let position = self.path.as_deref().map(|p| self.navigation.position(p));
+        if self.status_labels.position.as_ref().map(|(p, _)| *p) != position {
+            self.status_labels.position = position.map(|p| (p, p.to_string()));
+        }
+        let zoom = self.shown.as_ref().map(|_| self.view.zoom);
+        if self.status_labels.zoom.as_ref().map(|(z, _)| *z) != zoom {
+            self.status_labels.zoom = zoom.map(|z| (z, z.label()));
+        }
+    }
+
     fn status_bar(&self) -> status_bar::StatusBar<'_> {
         status_bar::StatusBar {
             file_name: self.shown.as_ref().map(|s| s.file_name.as_str()),
             modified: self.is_modified(),
-            position: self.path.as_deref().map(|p| self.navigation.position(p)),
+            position: self
+                .status_labels
+                .position
+                .as_ref()
+                .map(|(_, s)| s.as_str()),
             pixel_size: self.image_size(),
-            zoom: self.shown.as_ref().map(|_| self.view.zoom),
+            zoom: self.status_labels.zoom.as_ref().map(|(_, s)| s.as_str()),
             animation: self.shown.as_ref().and_then(|s| {
                 if s.frozen {
                     Some(status_bar::AnimationState::Frozen)
@@ -1958,6 +1987,7 @@ impl eframe::App for LecoqApp {
             {
                 self.execute(command);
             }
+            self.refresh_status_labels();
             status_bar::show(ui, &self.status_bar());
         }
         // Laying out keeps the zoomed Image in bounds, so the view comes back updated.
@@ -2091,6 +2121,29 @@ pub(crate) fn color_image(pixels: &lecoq_core::Pixels) -> egui::ColorImage {
 fn next_display_key() -> u64 {
     static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
     NEXT_KEY.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The empty-window hint ("Open (Ctrl+O), drop or paste (Ctrl+V) an image"), built once per OS
+/// rather than every idle frame (#66). It depends only on the OS's shortcut formatting, so it is
+/// memoised keyed on the OS (which changes only in tests, where the harness flips it): a tiny
+/// per-OS string is kept for the process, and the common idle frame allocates nothing.
+fn empty_window_hint(ctx: &egui::Context) -> &'static str {
+    static HINTS: std::sync::Mutex<Vec<(egui::os::OperatingSystem, &'static str)>> =
+        std::sync::Mutex::new(Vec::new());
+    let os = ctx.os();
+    let mut hints = HINTS.lock().expect("empty-window hint cache");
+    if let Some((_, hint)) = hints.iter().find(|(cached, _)| *cached == os) {
+        return hint;
+    }
+    let hint: &'static str = Box::leak(
+        strings::empty_window_hint(
+            &crate::ui::shortcut_text(ctx, &crate::input::OPEN),
+            &crate::ui::shortcut_text(ctx, &crate::input::PASTE),
+        )
+        .into_boxed_str(),
+    );
+    hints.push((os, hint));
+    hint
 }
 
 fn texture_size(texture: &egui::TextureHandle) -> Size {

@@ -5,8 +5,6 @@
 
 use lecoq_codec::Size;
 
-use crate::view::Zoom;
-
 use crate::strings::{
     self, ANIMATION as LABEL_ANIMATION, FILE_NAME as LABEL_FILE_NAME, MESSAGE as LABEL_MESSAGE,
     PIXEL_SIZE as LABEL_PIXEL_SIZE, SIBLING_POSITION as LABEL_POSITION, ZOOM as LABEL_ZOOM,
@@ -44,10 +42,12 @@ pub struct StatusBar<'a> {
     pub file_name: Option<&'a str>,
     /// Unsaved changes: ` •` follows the file name.
     pub modified: bool,
-    /// `n / N`, or `? / ?` while the Siblings are being scanned.
-    pub position: Option<String>,
+    /// `n / N`, or `? / ?` while the Siblings are being scanned. Pre-formatted and cached by the
+    /// app (#66), so the status bar borrows it rather than allocating it each frame.
+    pub position: Option<&'a str>,
     pub pixel_size: Option<Size>,
-    pub zoom: Option<Zoom>,
+    /// The zoom label (`Fit` or a percentage), pre-formatted and cached by the app (#66).
+    pub zoom: Option<&'a str>,
     pub animation: Option<AnimationState>,
     /// The transient message slot ("Last image in folder", "View only: …", …).
     pub message: Option<&'a str>,
@@ -68,14 +68,14 @@ pub fn show(ui: &mut egui::Ui, bar: &StatusBar<'_>) {
                 };
                 field(ui, LABEL_FILE_NAME, &format!("{name}{marker}"));
             }
-            if let Some(position) = &bar.position {
+            if let Some(position) = bar.position {
                 field(ui, LABEL_POSITION, position);
             }
             if let Some(size) = bar.pixel_size {
                 field(ui, LABEL_PIXEL_SIZE, &size.to_string());
             }
             if let Some(zoom) = bar.zoom {
-                field(ui, LABEL_ZOOM, &zoom.label());
+                field(ui, LABEL_ZOOM, zoom);
             }
             if let Some(animation) = bar.animation {
                 animation_field(ui, animation);
