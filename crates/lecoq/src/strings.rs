@@ -117,6 +117,8 @@ pub const KEY_MINUS: &str = "-";
 pub const KEY_ZERO: &str = "0";
 pub const KEY_LEFT: &str = "Left";
 pub const KEY_RIGHT: &str = "Right";
+pub const KEY_HOME: &str = "Home";
+pub const KEY_END: &str = "End";
 pub const KEY_ENTER: &str = "Enter";
 
 // ---- Property bar (§4.3) ----
@@ -368,6 +370,8 @@ pub const DOES_DELETE: &str = "Delete the selected Annotations, or trash the fil
 pub const DOES_FULLSCREEN: &str = "Fullscreen";
 pub const DOES_NEXT: &str = "Next image";
 pub const DOES_PREVIOUS: &str = "Previous image";
+pub const DOES_FIRST: &str = "First image";
+pub const DOES_LAST: &str = "Last image";
 pub const DOES_ZOOM_IN: &str = "Zoom in";
 pub const DOES_ZOOM_OUT: &str = "Zoom out";
 pub const DOES_FIT: &str = "Fit to window";

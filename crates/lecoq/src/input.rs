@@ -70,7 +70,7 @@ const POINTS_PER_STEP: f32 = 50.0;
 /// Ctrl+wheel only zooms while the pointer is over it. `typing` is true while text is being typed
 /// (the text tool, a dialog's text field): it has the keyboard to itself, Ctrl+C/V/Z included.
 /// `pannable` is whether the Image is zoomed beyond Fit (§3.1): a plain wheel pans then ([`crate::pan`])
-/// instead of navigating Siblings. The arrow keys navigate in either state.
+/// instead of navigating Siblings. The arrow keys and Home/End navigate in either state.
 pub fn commands(
     ctx: &egui::Context,
     canvas: Option<egui::Rect>,
@@ -118,6 +118,13 @@ pub fn commands(
             }
             if input.consume_key(Modifiers::NONE, Key::ArrowLeft) {
                 commands.push(Command::PreviousSibling);
+            }
+            // Home / End jump to the first / last Sibling.
+            if input.consume_key(Modifiers::NONE, Key::Home) {
+                commands.push(Command::FirstSibling);
+            }
+            if input.consume_key(Modifiers::NONE, Key::End) {
+                commands.push(Command::LastSibling);
             }
             editor_keys(input, &mut commands);
         }

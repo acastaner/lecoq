@@ -63,6 +63,33 @@ fn moving_to_a_sibling_with_unsaved_changes_asks_first() {
 }
 
 #[test]
+fn jumping_to_a_sibling_with_unsaved_changes_asks_first() {
+    // Home / End go through the same unsaved-changes flow as the arrow keys.
+    let (mut app, _) = folder(&["a.jpg", "b.jpg", "c.jpg"], "a.jpg");
+    edit(&mut app);
+
+    app.press(Key::End);
+
+    assert!(prompt_shown(&app));
+    app.harness.get_by_label("a.jpg has unsaved changes.");
+    answer(&mut app, "Discard");
+    assert_eq!(app.status("File name"), "c.jpg");
+}
+
+#[test]
+fn a_no_op_jump_with_unsaved_changes_does_not_ask() {
+    // Already on the first image: Home jumps nowhere, so there is nothing to ask about.
+    let (mut app, _) = folder(&["a.jpg", "b.jpg"], "a.jpg");
+    edit(&mut app);
+
+    app.press(Key::Home);
+
+    assert!(!prompt_shown(&app));
+    assert_eq!(app.status("File name"), "a.jpg •");
+    assert_eq!(app.doc().annotations().len(), 1);
+}
+
+#[test]
 fn without_unsaved_changes_there_is_no_prompt() {
     let (mut app, _) = folder(&["a.jpg", "b.jpg"], "a.jpg");
 
