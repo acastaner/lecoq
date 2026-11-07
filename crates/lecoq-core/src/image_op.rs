@@ -119,14 +119,14 @@ impl Pixels {
     /// Bytes held: what counts towards the History's pixel cap (§4.8).
     pub fn byte_len(&self) -> usize {
         match &self.data {
-            PixelData::Rgb(d) | PixelData::Rgba(d) => d.len(),
+            PixelData::Rgb(d) | PixelData::Rgba(d) | PixelData::RgbaPremultiplied(d) => d.len(),
         }
     }
 
     fn channels(&self) -> usize {
         match self.data {
             PixelData::Rgb(_) => 3,
-            PixelData::Rgba(_) => 4,
+            PixelData::Rgba(_) | PixelData::RgbaPremultiplied(_) => 4,
         }
     }
 
@@ -140,7 +140,7 @@ impl Pixels {
         let stride = self.width as usize * n;
         let row = region.width as usize * n;
         let src = match &self.data {
-            PixelData::Rgb(d) | PixelData::Rgba(d) => d,
+            PixelData::Rgb(d) | PixelData::Rgba(d) | PixelData::RgbaPremultiplied(d) => d,
         };
         let mut out = Vec::with_capacity(row * region.height as usize);
         for y in region.y..region.y + region.height {
@@ -150,10 +150,7 @@ impl Pixels {
         Pixels {
             width: region.width,
             height: region.height,
-            data: match self.data {
-                PixelData::Rgb(_) => PixelData::Rgb(out),
-                PixelData::Rgba(_) => PixelData::Rgba(out),
-            },
+            data: self.data.same_layout(out),
         }
     }
 }
@@ -193,7 +190,7 @@ impl Pixels {
     ) -> Pixels {
         let n = self.channels();
         let src = match &self.data {
-            PixelData::Rgb(d) | PixelData::Rgba(d) => d,
+            PixelData::Rgb(d) | PixelData::Rgba(d) | PixelData::RgbaPremultiplied(d) => d,
         };
         let stride = self.width as usize * n;
         let mut out = Vec::with_capacity(width as usize * height as usize * n);
@@ -207,10 +204,7 @@ impl Pixels {
         Pixels {
             width,
             height,
-            data: match self.data {
-                PixelData::Rgb(_) => PixelData::Rgb(out),
-                PixelData::Rgba(_) => PixelData::Rgba(out),
-            },
+            data: self.data.same_layout(out),
         }
     }
 }
