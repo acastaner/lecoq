@@ -6,6 +6,8 @@
 //! The icons are painted, not glyphs: egui's built-in fonts lack most of these symbols, and UI
 //! fonts aren't loaded before the first paint (§1.3).
 
+use std::sync::LazyLock;
+
 use egui::{Color32, Pos2, Rect, Stroke, pos2, vec2};
 
 use crate::Command;
@@ -14,22 +16,32 @@ use crate::tools::ToolId;
 
 const BUTTON: f32 = 30.0;
 
+/// Each strip tool with its tooltip, built once in [`ToolId::all`] order: the tooltips depend only
+/// on the tool's static name and key, so they are not reformatted every frame (#66).
+static TOOLTIPS: LazyLock<Vec<(ToolId, String)>> = LazyLock::new(|| {
+    ToolId::all()
+        .map(|tool| {
+            let tooltip = strings::with_shortcut(tool.name(), key_label(tool).unwrap_or(""));
+            (tool, tooltip)
+        })
+        .collect()
+});
+
 pub fn show(ui: &mut egui::Ui, active: ToolId, can_edit: bool) -> Option<Command> {
     let mut command = None;
     egui::Panel::left("tool_strip")
         .resizable(false)
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                for tool in ToolId::all() {
+                for (tool, tooltip) in TOOLTIPS.iter().map(|(t, s)| (*t, s.as_str())) {
                     let enabled = tool.is_available() && (can_edit || tool == ToolId::Select);
                     let button =
                         egui::Button::selectable(tool == active, "").min_size(vec2(BUTTON, BUTTON));
                     let name = tool.name();
-                    let tooltip = strings::with_shortcut(name, key_label(tool).unwrap_or(""));
                     let response = ui
                         .add_enabled(enabled, button)
-                        .on_hover_text(&tooltip)
-                        .on_disabled_hover_text(&tooltip)
+                        .on_hover_text(tooltip)
+                        .on_disabled_hover_text(tooltip)
                         .accessible_name(name);
                     let colour = if enabled {
                         ui.visuals().widgets.inactive.fg_stroke.color

@@ -5,6 +5,8 @@
 //! for the platform (Cmd on macOS), and turns into a [`Command`]; the app executes it. Entries that
 //! can't act right now are disabled, not hidden.
 
+use std::sync::{Mutex, OnceLock};
+
 use egui::{Color32, Pos2, Rect, Stroke, pos2, vec2};
 
 use crate::Command;
@@ -270,44 +272,76 @@ fn help_items(ui: &mut egui::Ui, command: &mut Option<Command>) {
     }
 }
 
+/// The four quick-action tooltips ("Save (Ctrl+S)", …). They depend only on the OS's shortcut
+/// formatting, so they are built once and reused, not reformatted every frame (#66).
+struct QuickTips {
+    save: String,
+    save_as: String,
+    copy: String,
+    undo: String,
+}
+
+fn quick_tips(ctx: &egui::Context) -> &'static QuickTips {
+    // Memoised keyed on the OS (which changes only in tests, where the harness flips it): the
+    // tooltips are built once per OS, not reformatted every frame (#66).
+    static TIPS: OnceLock<Mutex<Vec<(egui::os::OperatingSystem, &'static QuickTips)>>> =
+        OnceLock::new();
+    let os = ctx.os();
+    let mut cache = TIPS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .expect("quick-action tooltip cache");
+    if let Some((_, tips)) = cache.iter().find(|(cached, _)| *cached == os) {
+        return tips;
+    }
+    let tip = |label: &str, keys: &egui::KeyboardShortcut| {
+        strings::with_shortcut(label, &crate::ui::shortcut_text(ctx, keys))
+    };
+    let tips: &'static QuickTips = Box::leak(Box::new(QuickTips {
+        save: tip(strings::QUICK_SAVE, &input::SAVE),
+        save_as: tip(strings::QUICK_SAVE_AS, &input::SAVE_AS),
+        copy: tip(strings::QUICK_COPY, &input::COPY),
+        undo: tip(strings::QUICK_UNDO, &input::UNDO),
+    }));
+    cache.push((os, tips));
+    tips
+}
+
 /// The quick actions (§2), left to right: save, save as, copy, undo, the Image menu, trash.
 fn quick_actions(ui: &mut egui::Ui, bar: &MenuBar, command: &mut Option<Command>) {
-    let ctx = ui.ctx().clone();
-    let tip = |label: &str, keys: &egui::KeyboardShortcut| {
-        strings::with_shortcut(label, &crate::ui::shortcut_text(&ctx, keys))
-    };
-    let actions: [(&str, String, bool, Icon, Command); 4] = [
+    let tips = quick_tips(ui.ctx());
+    let actions: [(&str, &str, bool, Icon, Command); 4] = [
         (
             strings::QUICK_SAVE,
-            tip(strings::QUICK_SAVE, &input::SAVE),
+            &tips.save,
             bar.has_image,
             Icon::Save,
             Command::Save,
         ),
         (
             strings::QUICK_SAVE_AS,
-            tip(strings::QUICK_SAVE_AS, &input::SAVE_AS),
+            &tips.save_as,
             bar.has_image,
             Icon::SaveAs,
             Command::SaveAs,
         ),
         (
             strings::QUICK_COPY,
-            tip(strings::QUICK_COPY, &input::COPY),
+            &tips.copy,
             bar.has_image,
             Icon::Copy,
             Command::Copy,
         ),
         (
             strings::QUICK_UNDO,
-            tip(strings::QUICK_UNDO, &input::UNDO),
+            &tips.undo,
             bar.can_undo,
             Icon::Undo,
             Command::Undo,
         ),
     ];
     for (label, tooltip, enabled, icon, chosen) in actions {
-        if quick(ui, enabled, label, &tooltip, icon) {
+        if quick(ui, enabled, label, tooltip, icon) {
             *command = Some(chosen);
         }
     }
