@@ -16,7 +16,7 @@ _Avoid_: image annotation, picture (confusable with Image).
 
 **History**: the single undo/redo sequence for the open Image, covering both Annotation edits and Image operations. One gesture is one step. It ends when you move to another Sibling.
 
-**Sibling**: another image file in the same directory as the open Image. Moving to the next/previous Sibling is how lecoq works as a viewer.
+**Sibling**: another image file in the same directory as the open Image. Moving to the next/previous Sibling is how lecoq works as a viewer; Home jumps to the first Sibling and End to the last, in the same order.
 _Avoid_: neighbour, adjacent file.
 
 **Handle**: a grab point drawn on a selected Annotation for reshaping it. Most Annotations show a ring of handles around a bounding box, and dragging one resizes the whole shape.
@@ -33,7 +33,7 @@ _Avoid_: copy to folder, export.
 **Move to**: the File operation that relocates the Image's file to a Target folder. Its sibling is Move to trash, which relocates it to the system trash.
 _Avoid_: move to folder, relocate, rename.
 
-**Target folder**: the folder a Copy to or Move to puts the file in, chosen in a native folder picker.
+**Target folder**: the folder a Copy to or Move to puts the file in, chosen in a native folder picker. The picker opens at the last Target folder used, remembered between sessions; with none yet, or if it no longer exists, it opens at the Image's own folder.
 _Avoid_: destination, output folder.
 
 **Context menu**: the menu a right-click on the canvas opens while the Select tool is active and no Annotation is selected. It holds the clipboard actions and the File operations.
