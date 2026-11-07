@@ -197,6 +197,7 @@ impl Default for Renderer {
 /// cache, [`resample`] and the Inset cache all go through it, so the RGB→RGBA expansion and the
 /// alpha handling live in one place. RGB expands to opaque RGBA; straight RGBA stays straight
 /// (`Unpremul`); premultiplied RGBA is taken as-is (`Premul`).
+/// See also `lecoq_core::Pixels::premultiplied`, the other RGB→opaque-RGBA expansion; keep in sync.
 pub fn to_skia(pixels: &Pixels) -> sk::Image {
     let (data, alpha) = match &pixels.data {
         PixelData::Rgb(rgb) => {

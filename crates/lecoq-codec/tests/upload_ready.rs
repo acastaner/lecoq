@@ -1,7 +1,6 @@
 //! The display decode lands in upload-ready pixels, produced here (on the decode pool, #56) and
-//! not on the UI thread: premultiplied RGBA in egui's layout, with an `opaque` flag so the common
-//! opaque case is known without scanning. Full-resolution pixels stay straight (that is #57's
-//! path and the save encoders' contract); this test only covers the display decode.
+//! not on the UI thread: premultiplied RGBA in egui's layout. Full-resolution pixels stay straight
+//! (that is #57's path and the save encoders' contract); this test only covers the display decode.
 
 use std::io::Cursor;
 
@@ -19,7 +18,7 @@ fn png_bytes(encode: impl FnOnce(&mut Cursor<Vec<u8>>)) -> Vec<u8> {
 }
 
 #[test]
-fn an_opaque_image_is_upload_ready_rgba_with_alpha_255_and_the_opaque_flag() {
+fn an_opaque_image_is_upload_ready_rgba_with_alpha_255() {
     // A 2×2 RGB image (no alpha channel): the opaque, common case.
     let mut img = RgbImage::new(2, 2);
     img.put_pixel(0, 0, image::Rgb([10, 120, 200]));
@@ -30,7 +29,6 @@ fn an_opaque_image_is_upload_ready_rgba_with_alpha_255_and_the_opaque_flag() {
 
     let display = lecoq_codec::decode_bytes(&bytes).unwrap().into_display(BOX);
 
-    assert!(display.opaque, "an image with no alpha channel is opaque");
     let PixelData::RgbaPremultiplied(data) = &display.pixels.data else {
         panic!("display pixels must be upload-ready (premultiplied RGBA), not decode-format");
     };
@@ -43,7 +41,7 @@ fn an_opaque_image_is_upload_ready_rgba_with_alpha_255_and_the_opaque_flag() {
 }
 
 #[test]
-fn a_translucent_image_is_premultiplied_exactly_and_not_flagged_opaque() {
+fn a_translucent_image_is_premultiplied_exactly() {
     // A 2×1 RGBA image: one opaque pixel, one half-transparent.
     let mut img = RgbaImage::new(2, 1);
     img.put_pixel(0, 0, image::Rgba([10, 120, 200, 255]));
@@ -52,10 +50,6 @@ fn a_translucent_image_is_premultiplied_exactly_and_not_flagged_opaque() {
 
     let display = lecoq_codec::decode_bytes(&bytes).unwrap().into_display(BOX);
 
-    assert!(
-        !display.opaque,
-        "an image with an alpha channel is not opaque"
-    );
     let PixelData::RgbaPremultiplied(data) = &display.pixels.data else {
         panic!("display pixels must be upload-ready (premultiplied RGBA)");
     };

@@ -74,6 +74,7 @@ impl Pixels {
     /// RGB gains an opaque alpha; straight RGBA is premultiplied exactly the way egui premultiplies
     /// a `ColorImage` (`from_rgba_unmultiplied`), so the display texture and the Skia source agree
     /// to the byte. Already-premultiplied pixels are returned unchanged.
+    /// See also `lecoq-render`'s `to_skia`, the other RGB→opaque-RGBA expansion; keep in sync.
     pub fn premultiplied(&self) -> Pixels {
         let data = match &self.data {
             PixelData::Rgb(rgb) => PixelData::RgbaPremultiplied(
