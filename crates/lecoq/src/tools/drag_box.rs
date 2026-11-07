@@ -1,7 +1,9 @@
 //! A tool that creates an Annotation by dragging out a box: rectangle, ellipse, and the region
 //! tools (highlight, obfuscate). Shift constrains the box to a square (§4.1).
 
-use lecoq_core::{AnnotationId, AnnotationShape, Point, Rect};
+use lecoq_core::{
+    AnnotationId, AnnotationShape, Ellipse, Highlight, Obfuscate, Point, Rect, Rectangle,
+};
 
 use super::{Pointer, Tool, ToolContext};
 
@@ -15,6 +17,26 @@ struct Drag {
     start: Point,
     id: AnnotationId,
     moved: bool,
+}
+
+/// Rectangle (R): drag; Shift makes a square.
+pub fn rectangle() -> DragBox {
+    DragBox::new(|r| Rectangle::new(r).into())
+}
+
+/// Ellipse (E): drag; Shift makes a circle.
+pub fn ellipse() -> DragBox {
+    DragBox::new(|r| Ellipse::new(r).into())
+}
+
+/// Highlight (H): drag a region; Shift makes a square. The mode is a style property.
+pub fn highlight() -> DragBox {
+    DragBox::new(|r| Highlight::new(r).into())
+}
+
+/// Obfuscate (O): drag a region; Shift makes a square. The mode and strength are style properties.
+pub fn obfuscate() -> DragBox {
+    DragBox::new(|r| Obfuscate::new(r).into())
 }
 
 impl DragBox {

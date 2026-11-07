@@ -64,3 +64,48 @@ impl Shape for Ellipse {
         Self::PROPERTIES
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::Rgba;
+
+    fn style(filled: bool) -> Style {
+        Style {
+            thickness: 4.0,
+            fill: filled.then_some(Rgba::WHITE),
+            ..Style::default()
+        }
+    }
+
+    fn ellipse() -> Ellipse {
+        Ellipse::new(Rect::from_corners(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 50.0),
+        ))
+    }
+
+    #[test]
+    fn unfilled_is_hit_on_the_curve_but_not_in_the_hollow_middle() {
+        let e = ellipse();
+        assert!(
+            e.hit(Point::new(100.0, 25.0), &style(false), 0.0),
+            "the rightmost point of the curve"
+        );
+        assert!(
+            !e.hit(Point::new(50.0, 25.0), &style(false), 0.0),
+            "hollow centre"
+        );
+    }
+
+    #[test]
+    fn filled_is_hit_at_the_centre() {
+        assert!(ellipse().hit(Point::new(50.0, 25.0), &style(true), 0.0));
+    }
+
+    #[test]
+    fn a_bounding_box_corner_is_outside_the_inscribed_ellipse() {
+        // (0,0) is a corner of the box but well outside the ellipse, even when filled.
+        assert!(!ellipse().hit(Point::new(0.0, 0.0), &style(true), 0.0));
+    }
+}

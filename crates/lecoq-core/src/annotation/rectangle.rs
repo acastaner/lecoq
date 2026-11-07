@@ -52,3 +52,55 @@ impl Shape for Rectangle {
         Self::PROPERTIES
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::Rgba;
+
+    fn style(filled: bool) -> Style {
+        Style {
+            thickness: 4.0,
+            fill: filled.then_some(Rgba::WHITE),
+            ..Style::default()
+        }
+    }
+
+    fn rect() -> Rectangle {
+        Rectangle::new(Rect::from_corners(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 50.0),
+        ))
+    }
+
+    #[test]
+    fn unfilled_is_hit_on_the_border_but_not_in_the_hollow_middle() {
+        let r = rect();
+        assert!(
+            r.hit(Point::new(0.0, 25.0), &style(false), 0.0),
+            "left edge"
+        );
+        assert!(
+            !r.hit(Point::new(50.0, 25.0), &style(false), 0.0),
+            "hollow centre"
+        );
+    }
+
+    #[test]
+    fn filled_is_hit_anywhere_inside() {
+        assert!(rect().hit(Point::new(50.0, 25.0), &style(true), 0.0));
+    }
+
+    #[test]
+    fn a_point_beyond_the_stroke_and_tolerance_misses() {
+        assert!(!rect().hit(Point::new(-5.0, 25.0), &style(false), 0.0));
+    }
+
+    #[test]
+    fn tolerance_widens_the_hittable_border() {
+        // 4 px left of the edge: outside the 2 px stroke half-width, inside a 5 px tolerance.
+        let p = Point::new(-4.0, 25.0);
+        assert!(!rect().hit(p, &style(false), 0.0));
+        assert!(rect().hit(p, &style(false), 5.0));
+    }
+}

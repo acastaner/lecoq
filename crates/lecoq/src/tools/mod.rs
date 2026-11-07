@@ -12,11 +12,7 @@
 mod crop;
 mod drag_box;
 mod drag_segment;
-mod ellipse;
 mod freehand;
-mod highlight;
-mod obfuscate;
-mod rectangle;
 pub mod select;
 mod step_counter;
 pub mod text;
@@ -92,7 +88,7 @@ const TOOLS: &[ToolInfo] = &[
         key: Some(egui::Key::R),
         in_strip: true,
         properties: Rectangle::PROPERTIES,
-        create: Some(|| Box::new(rectangle::new())),
+        create: Some(|| Box::new(drag_box::rectangle())),
         default_style: None,
     },
     ToolInfo {
@@ -103,7 +99,7 @@ const TOOLS: &[ToolInfo] = &[
         key: Some(egui::Key::E),
         in_strip: true,
         properties: Ellipse::PROPERTIES,
-        create: Some(|| Box::new(ellipse::new())),
+        create: Some(|| Box::new(drag_box::ellipse())),
         default_style: None,
     },
     ToolInfo {
@@ -169,7 +165,7 @@ const TOOLS: &[ToolInfo] = &[
         key: Some(egui::Key::H),
         in_strip: true,
         properties: Highlight::PROPERTIES,
-        create: Some(|| Box::new(highlight::new())),
+        create: Some(|| Box::new(drag_box::highlight())),
         default_style: None,
     },
     ToolInfo {
@@ -180,7 +176,7 @@ const TOOLS: &[ToolInfo] = &[
         key: Some(egui::Key::O),
         in_strip: true,
         properties: Obfuscate::PROPERTIES,
-        create: Some(|| Box::new(obfuscate::new())),
+        create: Some(|| Box::new(drag_box::obfuscate())),
         default_style: None,
     },
     ToolInfo {
