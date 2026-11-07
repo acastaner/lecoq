@@ -2006,7 +2006,10 @@ fn upload(
     image: &DisplayImage,
     kind: Pixels,
 ) -> (egui::TextureHandle, Arc<lecoq_core::Pixels>) {
-    let pixels = Arc::new(display_pixels(image));
+    // The pixels are already upload-ready (premultiplied on the decode pool, #56): the switch path
+    // shares the cache's `Arc` and uploads, with no conversion on the UI thread. `display_pixels`
+    // is that same `Arc`, so the shown Image's pixels live once, counted against the cache's cap.
+    let pixels = Arc::clone(&image.pixels);
     let (name, options) = match kind {
         Pixels::Display => ("image", egui::TextureOptions::LINEAR),
         // Drawn anywhere from just above the display size down: mipmaps keep it from aliasing.
@@ -2022,12 +2025,6 @@ fn upload(
         ctx.load_texture(name, color_image(&pixels), options),
         pixels,
     )
-}
-
-/// A display-size decode as premultiplied, upload-ready [`lecoq_core::Pixels`] (#64, §7.2): the
-/// one pixel type the display texture, the screen composite and the save fallback all share.
-pub(crate) fn display_pixels(image: &DisplayImage) -> lecoq_core::Pixels {
-    image.pixels.premultiplied()
 }
 
 /// The egui `ColorImage` that wraps premultiplied display [`lecoq_core::Pixels`] for a texture

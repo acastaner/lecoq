@@ -100,8 +100,10 @@ fn write(dir: &std::path::Path, bytes: &[u8]) -> std::path::PathBuf {
 
 fn rgba(pixels: &lecoq_codec::Pixels) -> &[u8] {
     match &pixels.data {
-        PixelData::Rgba(buffer) => buffer,
-        _ => panic!("expected an RGBA frame"),
+        // Display decodes are upload-ready (premultiplied, #56); these fixtures are fully opaque,
+        // so the colour channels this test reads are identical either way.
+        PixelData::Rgba(buffer) | PixelData::RgbaPremultiplied(buffer) => buffer,
+        PixelData::Rgb(_) => panic!("expected an RGBA frame"),
     }
 }
 

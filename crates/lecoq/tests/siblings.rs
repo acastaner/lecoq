@@ -175,8 +175,14 @@ fn seven_with_cache_cap(cap: usize) -> TestApp {
     app
 }
 
-/// Display-size bytes of the small fixture: 320×240 RGB.
-const SMALL_BYTES: usize = 320 * 240 * 3;
+/// Upload-ready display-size bytes of the small opaque fixture: 320×240, premultiplied RGBA. The
+/// cache holds upload-ready pixels (#56), so an opaque source (320×240 RGB when decoded) is a third
+/// larger here than its decode format — this is the entry size the cap now counts.
+const SMALL_BYTES: usize = 320 * 240 * 4;
+
+/// What the same entry occupied before #56: the decoder's own RGB format. Kept to spell out the
+/// trade-off the cap now makes (fewer, larger entries), not used as a cache size.
+const SMALL_DECODE_FORMAT_BYTES: usize = 320 * 240 * 3;
 
 #[test]
 fn cache_stays_under_its_cap_evicting_least_recently_shown_first() {
@@ -202,6 +208,77 @@ fn current_image_is_never_evicted_even_over_the_cap() {
     app.press(Key::ArrowRight);
     assert_eq!(app.status("File name"), "3.jpg");
     assert_eq!(cached_names(&app), ["3.jpg"]);
+}
+
+#[test]
+fn fewer_larger_upload_ready_entries_fit_under_the_cap() {
+    // The cache now holds upload-ready pixels (#56): an opaque entry is premultiplied RGBA, a
+    // third larger than the decoder's RGB. A cap that once held exactly three decode-format copies
+    // of the fixture holds only two upload-ready ones — the trade-off is fewer Siblings, not a cap
+    // that is silently overrun.
+    let cap = 3 * SMALL_DECODE_FORMAT_BYTES;
+    assert!(
+        cap < 3 * SMALL_BYTES,
+        "three upload-ready entries must not fit where three decode-format ones did"
+    );
+    let mut app = seven_with_cache_cap(cap);
+    for _ in 0..4 {
+        app.press(Key::ArrowRight);
+        let cached = cached_names(&app);
+        assert!(
+            cached.len() <= 2,
+            "the cap holds at most two upload-ready entries, got {cached:?}"
+        );
+        assert!(
+            cached.contains(&app.status("File name")),
+            "the current Image is never evicted"
+        );
+    }
+}
+
+#[test]
+fn a_cached_switch_shows_the_siblings_pixels_opaque_and_translucent() {
+    // An opaque PNG and a translucent PNG as Siblings in one folder. Opening the first prefetches
+    // the second, so each switch is a cached one: it shares the cache's upload-ready pixels and
+    // uploads them, converting nothing on the UI thread (#56). The pixels on screen must be the
+    // same as on open (tests/formats.rs), opaque and translucent alike.
+    // The fixtures' flat colour (tests/formats.rs); PNG is lossless, so an exact match but for a
+    // rounding step.
+    let close = |got: egui::Color32| {
+        got.r().abs_diff(40) <= 1 && got.g().abs_diff(120) <= 1 && got.b().abs_diff(200) <= 1
+    };
+
+    let mut app = TestApp::new();
+    let opaque = app.add_fixtures(&["png-64x48.png"]);
+    app.add_fixtures(&["rgba-64x48.png"]);
+    app.open(opaque);
+    app.settle();
+    assert!(
+        cached_names(&app).contains(&"rgba-64x48.png".to_owned()),
+        "the sibling is prefetched before the switch: {:?}",
+        cached_names(&app)
+    );
+
+    // "png-…" sorts before "rgba-…", so Right moves to the cached translucent sibling.
+    app.press(Key::ArrowRight);
+    assert_eq!(app.status("File name"), "rgba-64x48.png");
+    assert!(
+        close(app.pixel(10, 24).unwrap()),
+        "opaque half of the translucent PNG"
+    );
+    assert_eq!(
+        app.pixel(54, 24).unwrap().a(),
+        0,
+        "transparent half stays transparent"
+    );
+
+    // Back to the opaque sibling, now cached: a flat colour.
+    app.press(Key::ArrowLeft);
+    assert_eq!(app.status("File name"), "png-64x48.png");
+    assert!(
+        close(app.pixel(32, 24).unwrap()),
+        "the opaque PNG's flat colour"
+    );
 }
 
 fn cached_names(app: &TestApp) -> Vec<String> {

@@ -181,13 +181,11 @@ fn decode(
         let Ok(frame) = frame else {
             return;
         };
-        let pixels = crate::app::display_pixels(&frame.image);
+        // The frame's pixels are already upload-ready (premultiplied on the decode side, #56); the
+        // animation holds and uploads them without converting on the UI thread.
+        let pixels = Arc::clone(&frame.image.pixels);
         bytes += frame_bytes(&pixels);
-        if bytes > budget
-            || tx
-                .send(Message::Frame(Arc::new(pixels), frame.delay))
-                .is_err()
-        {
+        if bytes > budget || tx.send(Message::Frame(pixels, frame.delay)).is_err() {
             return;
         }
         ctx.request_repaint();

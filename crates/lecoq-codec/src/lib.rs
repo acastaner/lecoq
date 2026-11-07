@@ -10,6 +10,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 use fast_image_resize as fr;
 use image::metadata::Orientation;
@@ -51,30 +52,57 @@ impl fmt::Display for Size {
     }
 }
 
-/// An image decoded for display: reduced to fit a box, never above its original size.
+/// An image decoded for display: reduced to fit a box, never above its original size, and left
+/// upload-ready. `pixels` are premultiplied RGBA in egui's exact layout (#56, §7.2), produced on
+/// the decode pool so a cached switch is an `Arc` clone and a GPU upload with no conversion on the
+/// UI thread; they are shared (`Arc`) with the display-size cache, counted once against its cap.
+/// Full-resolution pixels stay straight and never pass through here (that is [`Decoded::into_full`]
+/// and #57).
 #[derive(Clone)]
 pub struct DisplayImage {
     /// The size of the file's pixels, before any reduction, as displayed (after orientation).
     pub original_size: Size,
     /// The size of `pixels`.
     pub size: Size,
-    pub pixels: Pixels,
+    /// Premultiplied, upload-ready pixels, shared with the cache and the shown Image's texture.
+    pub pixels: Arc<Pixels>,
+    /// The source had no alpha channel, so every pixel is opaque (alpha 255) and straight alpha
+    /// equals premultiplied: the common case, uploaded with no premultiply pass (#56).
+    pub opaque: bool,
     /// The file is a GIF or WebP, so it may be an animation: [`frames`] tells. The pixels are its
     /// first frame.
     pub may_animate: bool,
 }
 
 impl DisplayImage {
-    /// The same image reduced to fit inside `max`, never enlarged (a pasted image's display-size
-    /// pixels, §3.5).
-    pub fn reduced(&self, max: Size) -> DisplayImage {
-        let target = fit_within(self.size, max);
-        DisplayImage {
-            original_size: self.original_size,
-            size: target,
-            pixels: resize(self.pixels.clone(), self.size, target),
-            may_animate: self.may_animate,
-        }
+    /// A display-size, upload-ready image reduced from straight full-resolution `pixels` (whose
+    /// stored size is `full_size`) to fit inside `max`, never enlarged, then premultiplied: a
+    /// pasted image's display copy, built from the same decode that feeds the editor's
+    /// full-resolution pixels (§3.5), so the file is decoded once.
+    pub fn reduced_upload_ready(pixels: &Pixels, full_size: Size, max: Size) -> DisplayImage {
+        let target = fit_within(full_size, max);
+        let reduced = resize(pixels.clone(), full_size, target);
+        upload_ready(reduced, full_size, target, false)
+    }
+}
+
+/// Wrap straight, oriented, colour-converted `pixels` (displayed `size`, original `original_size`)
+/// as an upload-ready [`DisplayImage`]: premultiply exactly the way egui does and flag whether the
+/// source was opaque. For RGB this only appends an opaque alpha (no premultiply arithmetic); for
+/// straight RGBA it premultiplies once, here on the pool thread (#56).
+fn upload_ready(
+    pixels: Pixels,
+    original_size: Size,
+    size: Size,
+    may_animate: bool,
+) -> DisplayImage {
+    let opaque = matches!(pixels.data, PixelData::Rgb(_));
+    DisplayImage {
+        original_size,
+        size,
+        pixels: Arc::new(pixels.premultiplied()),
+        opaque,
+        may_animate,
     }
 }
 
@@ -134,8 +162,9 @@ impl Decoded {
     }
 
     /// Reduce to fit inside `max` (physical pixels), keeping the aspect ratio, never enlarging;
-    /// then apply the orientation and convert to sRGB. The colour converter is prepared from this
-    /// decode's profile, once, here.
+    /// then apply the orientation, convert to sRGB, and leave the pixels upload-ready
+    /// (premultiplied, #56). The colour converter is prepared from this decode's profile, once,
+    /// here.
     pub fn into_display(self, max: Size) -> DisplayImage {
         let converter = colour::Converter::prepare(self.icc.as_deref());
         self.into_display_with(max, &converter)
@@ -149,6 +178,26 @@ impl Decoded {
         max: Size,
         converter: &colour::Converter,
     ) -> DisplayImage {
+        let may_animate = self.may_animate;
+        let (pixels, original_size, size) = self.oriented(max, converter);
+        // Premultiply here, on the decode pool, so the UI thread never converts on a switch (#56).
+        upload_ready(pixels, original_size, size, may_animate)
+    }
+
+    /// The full-resolution pixels, oriented and colour-converted but left straight (not reduced,
+    /// not premultiplied): what the editor and the save encoders work from (§5.3, §7.2). The
+    /// colour converter is prepared from this decode's profile, once, here.
+    pub fn into_full(self) -> Pixels {
+        let converter = colour::Converter::prepare(self.icc.as_deref());
+        let max = self.size();
+        let (pixels, _, _) = self.oriented(max, &converter);
+        pixels
+    }
+
+    /// Reduce to fit inside `max`, then orient and convert to sRGB, leaving straight pixels. The
+    /// shared core of the display path (which then premultiplies) and the full-resolution path
+    /// (which does not). Returns the straight pixels with their original and reduced sizes.
+    fn oriented(self, max: Size, converter: &colour::Converter) -> (Pixels, Size, Size) {
         let original_size = self.size();
         let target = fit_within(original_size, max);
         let stored_target = if swaps_axes(self.orientation) {
@@ -161,12 +210,7 @@ impl Decoded {
             pixels = orient(pixels, stored_target, self.orientation);
         }
         converter.convert(&mut pixels);
-        DisplayImage {
-            original_size,
-            size: target,
-            pixels,
-            may_animate: self.may_animate,
-        }
+        (pixels, original_size, target)
     }
 }
 

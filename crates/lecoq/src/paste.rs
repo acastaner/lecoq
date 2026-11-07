@@ -98,11 +98,10 @@ impl PendingIncoming {
 
 fn image(decoded: lecoq_codec::Decoded, destination: Destination, display_box: Size) -> Incoming {
     let size = decoded.size();
-    let full = decoded.into_display(size);
-    let display = (destination == Destination::Window).then(|| full.reduced(display_box));
-    // One pixel type end to end (#64): the decode's pixels are already `lecoq_core::Pixels`.
-    Incoming::Image {
-        full: full.pixels,
-        display,
-    }
+    // Decode once: the editor keeps the straight full-resolution pixels (§5.3), and a window paste
+    // also gets an upload-ready display copy reduced from them (§3.5, #56).
+    let full = decoded.into_full();
+    let display = (destination == Destination::Window)
+        .then(|| lecoq_codec::DisplayImage::reduced_upload_ready(&full, size, display_box));
+    Incoming::Image { full, display }
 }
