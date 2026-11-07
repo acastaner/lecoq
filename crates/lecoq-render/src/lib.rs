@@ -62,10 +62,41 @@ impl Renderer {
         Self { source: None }
     }
 
-    /// The Image plus every Annotation of `doc`, for `view`.
+    /// The Image plus every Annotation of `doc`, for `view`, in a freshly allocated buffer. This is
+    /// [`composite_into`](Self::composite_into) with its own `view`-sized buffer, kept for Flatten
+    /// and the Annotation PNG, which own their result.
     pub fn composite(&mut self, doc: &Document, source: &Source<'_>, view: View) -> Composite {
+        let width = view.width.max(1);
+        let height = view.height.max(1);
+        let mut buffer = vec![0u8; width as usize * height as usize * 4];
+        self.composite_into(doc, source, view, &mut buffer, true);
+        Composite {
+            width,
+            height,
+            rgba_premultiplied: buffer,
+        }
+    }
+
+    /// Render the composite straight into `buffer`, a caller-provided RGBA-premultiplied buffer of
+    /// exactly `view.width.max(1) * view.height.max(1) * 4` bytes (#55). This is the one drawing
+    /// routine; [`composite`](Self::composite) wraps it around an owned buffer.
+    ///
+    /// When `fresh` is true the caller guarantees `buffer` is already fully transparent (a new
+    /// zeroed allocation), so the redundant `clear` is skipped — the win that keeps a reused,
+    /// page-faulted buffer from being walked a second time. When it is false the buffer is a reused
+    /// one and is cleared first, so no pixel of the previous frame can survive.
+    pub fn composite_into(
+        &mut self,
+        doc: &Document,
+        source: &Source<'_>,
+        view: View,
+        buffer: &mut [u8],
+        fresh: bool,
+    ) {
         let image = self.source_image(source);
-        render(view, |canvas| scene::Scene::new(image, doc).draw(canvas))
+        render_into(view, buffer, fresh, |canvas| {
+            scene::Scene::new(image, doc).draw(canvas)
+        });
     }
 
     /// Only the Annotations `ids` of `doc`, on transparency, for `view` (the PNG of copied
@@ -108,35 +139,45 @@ impl Renderer {
     }
 }
 
-/// Run `draw` on a transparent `view`-sized canvas set up in Image pixels.
+/// Run `draw` on a transparent `view`-sized canvas (a freshly allocated buffer) set up in Image
+/// pixels, and return it owned. For callers that own their result (Flatten, the Annotation PNG).
 fn render(view: View, draw: impl FnOnce(&sk::Canvas)) -> Composite {
     let width = view.width.max(1);
     let height = view.height.max(1);
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    render_into(view, &mut pixels, true, draw);
+    Composite {
+        width,
+        height,
+        rgba_premultiplied: pixels,
+    }
+}
+
+/// Run `draw` on `buffer` as a `view`-sized canvas set up in Image pixels. `buffer` must be exactly
+/// `view.width.max(1) * view.height.max(1) * 4` bytes. When `fresh` is false the buffer is cleared
+/// first; when true it is taken to be already transparent and the clear is skipped (#55).
+fn render_into(view: View, buffer: &mut [u8], fresh: bool, draw: impl FnOnce(&sk::Canvas)) {
+    let width = view.width.max(1);
+    let height = view.height.max(1);
     let info = sk::ImageInfo::new(
         (width as i32, height as i32),
         sk::ColorType::RGBA8888,
         sk::AlphaType::Premul,
         None,
     );
-    {
-        let mut surface = sk::surfaces::wrap_pixels(&info, &mut pixels, None, None)
-            .expect("a raster surface for the composite");
-        let canvas = surface.canvas();
+    let mut surface = sk::surfaces::wrap_pixels(&info, buffer, None, None)
+        .expect("a raster surface for the composite");
+    let canvas = surface.canvas();
+    if !fresh {
         canvas.clear(sk::Color::TRANSPARENT);
-        // From here on, draw in Image pixels.
-        canvas.scale((
-            width as f32 / view.region.width().max(f32::EPSILON),
-            height as f32 / view.region.height().max(f32::EPSILON),
-        ));
-        canvas.translate((-view.region.min.x, -view.region.min.y));
-        draw(canvas);
     }
-    Composite {
-        width,
-        height,
-        rgba_premultiplied: pixels,
-    }
+    // From here on, draw in Image pixels.
+    canvas.scale((
+        width as f32 / view.region.width().max(f32::EPSILON),
+        height as f32 / view.region.height().max(f32::EPSILON),
+    ));
+    canvas.translate((-view.region.min.x, -view.region.min.y));
+    draw(canvas);
 }
 
 impl Default for Renderer {
@@ -188,4 +229,145 @@ pub(crate) fn core_rect(r: sk::Rect) -> Rect {
         lecoq_core::Point::new(r.left, r.top),
         lecoq_core::Point::new(r.right, r.bottom),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lecoq_core::{Document, Point, Rectangle, Style};
+
+    /// A 48×32 RGB source with a gradient, so a stale-pixel bug would show up as wrong colours.
+    fn source() -> Pixels {
+        let (w, h) = (48u32, 32u32);
+        let mut data = Vec::with_capacity((w * h * 3) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                data.push((x * 5) as u8);
+                data.push((y * 7) as u8);
+                data.push(96);
+            }
+        }
+        Pixels {
+            width: w,
+            height: h,
+            data: PixelData::Rgb(data),
+        }
+    }
+
+    fn whole_view() -> View {
+        View {
+            region: Rect::from_corners(Point::new(0.0, 0.0), Point::new(48.0, 32.0)),
+            width: 48,
+            height: 32,
+        }
+    }
+
+    /// A shadowed Rectangle (the ticket's measurement shape) inside the view.
+    fn doc_with_shadowed_rectangle() -> Document {
+        let mut doc = Document::new(48, 32);
+        doc.step(|doc| {
+            doc.add(
+                Rectangle::new(Rect::from_corners(
+                    Point::new(10.0, 8.0),
+                    Point::new(36.0, 26.0),
+                )),
+                Style {
+                    shadow: true,
+                    ..Style::default()
+                },
+            )
+        });
+        doc
+    }
+
+    #[test]
+    fn composite_into_a_fresh_buffer_equals_the_owned_composite() {
+        let px = source();
+        let doc = doc_with_shadowed_rectangle();
+        let view = whole_view();
+
+        let owned = Renderer::new().composite(
+            &doc,
+            &Source {
+                key: 1,
+                pixels: &px,
+            },
+            view,
+        );
+
+        let mut buffer = vec![0u8; (view.width * view.height * 4) as usize];
+        Renderer::new().composite_into(
+            &doc,
+            &Source {
+                key: 1,
+                pixels: &px,
+            },
+            view,
+            &mut buffer,
+            true,
+        );
+
+        assert_eq!(
+            owned.rgba_premultiplied, buffer,
+            "composite_into a fresh buffer must equal composite()"
+        );
+    }
+
+    #[test]
+    fn composite_into_a_reused_dirty_buffer_leaves_no_stale_pixels() {
+        let px = source();
+        let view = whole_view();
+        let mut renderer = Renderer::new();
+
+        // Dirty the buffer with a different Document: a filled, shadowed shape over the whole view.
+        let mut other = Document::new(48, 32);
+        other.step(|doc| {
+            doc.add(
+                Rectangle::new(view.region),
+                Style {
+                    shadow: true,
+                    fill: Some(lecoq_core::Rgba::WHITE),
+                    ..Style::default()
+                },
+            )
+        });
+        let mut buffer = vec![0u8; (view.width * view.height * 4) as usize];
+        renderer.composite_into(
+            &other,
+            &Source {
+                key: 1,
+                pixels: &px,
+            },
+            view,
+            &mut buffer,
+            true,
+        );
+
+        // Reuse it for the real Document with fresh = false (the per-frame reuse path).
+        let doc = doc_with_shadowed_rectangle();
+        renderer.composite_into(
+            &doc,
+            &Source {
+                key: 1,
+                pixels: &px,
+            },
+            view,
+            &mut buffer,
+            false,
+        );
+
+        // Must match a from-scratch render: no pixel of the previous frame may survive.
+        let fresh = renderer.composite(
+            &doc,
+            &Source {
+                key: 1,
+                pixels: &px,
+            },
+            view,
+        );
+        assert_eq!(
+            fresh.rgba_premultiplied, buffer,
+            "a reused buffer rendered with fresh = false must leave no stale pixels"
+        );
+    }
 }
