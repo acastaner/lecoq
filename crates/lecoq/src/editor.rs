@@ -67,6 +67,10 @@ struct Edited {
     queued: Vec<ImageOp>,
     /// The last composite, its texture, and what it was rendered for.
     composite: Option<CompositeTexture>,
+    /// How many times the composite has actually been (re)rendered for this Image: the full path
+    /// and the dirty-region fast path each bump it; the reuse path (pan and zoom below the display
+    /// density, #58) does not. A test seam for ADR 0011, off the render path.
+    renders: u64,
 }
 
 struct CompositeTexture {
@@ -151,6 +155,15 @@ enum Fonts {
 
 /// How far from a text box a press still counts as inside it, in points.
 const TEXT_SLOP: f32 = 2.0;
+
+/// How far past the display density the zoom may sit before the exact full-resolution path takes
+/// over from the resampled whole-Image composite (#58, ADR 0011). A small margin at the boundary,
+/// in the spirit of the sub-pixel slop in `is_pannable`, so float rounding in `wanted_density`
+/// against `display_density` can't flap between the two paths frame to frame — which would
+/// re-render on alternating frames, the very cost this avoids. The cost is a sliver of zoom just
+/// above the display density that is resampled when it could have been exact, below what the eye
+/// resolves.
+const DENSITY_MARGIN: f32 = 0.01;
 
 impl Default for Editor {
     fn default() -> Self {
@@ -237,6 +250,7 @@ impl Editor {
             generation: self.opened,
             queued: Vec::new(),
             composite: None,
+            renders: 0,
         });
         if view_only {
             self.set_tool(ToolId::Select);
@@ -326,6 +340,14 @@ impl Editor {
             height: c.image.size[1] as u32,
             rgba_premultiplied: c.image.as_raw().to_vec(),
         })
+    }
+
+    /// How many times the composite has actually been (re)rendered for the open Image. Pan and
+    /// zoom below the display density reuse the whole-Image texture and do not bump it (#58, ADR
+    /// 0011); a revision change or a crossing of the display density does. A test seam, off the
+    /// render path.
+    pub fn composite_renders(&self) -> u64 {
+        self.edited.as_ref().map_or(0, |e| e.renders)
     }
 
     /// The style the property bar shows when nothing is selected: the active tool's.
@@ -1159,36 +1181,73 @@ impl Editor {
             e.composite = None;
             return None;
         }
-        let (dest, region, px) = layout.visible()?;
-        let view = View {
-            region,
-            width: px.width,
-            height: px.height,
-        };
-        // Zoomed in past the display-size decode, draw from the full-resolution pixels (§7.2).
+        let (shown, region, px) = layout.visible()?;
+
+        // The source, the view and where the texture is drawn (§7.2, ADR 0011). Up to the display
+        // density the composite is drawn from the display-size pixels over the WHOLE Image at the
+        // display texture's resolution, and the canvas draws the visible sub-rectangle of it as it
+        // draws the plain Image texture. That view is independent of pan and zoom, so the cache key
+        // is stable and pan/zoom below the display density reuse the texture — only `dest` moves.
+        // A small margin at the boundary (#58) keeps float rounding from flapping between this
+        // resampled path and the exact one. Zoomed past the display density, the full-resolution
+        // pixels drive the current visible-region composite, re-rendered as the view changes; after
+        // an Image operation whose full-resolution pixels haven't arrived yet, the display pixels
+        // draw the visible region as before, until the decode lands.
         let display_density = display.pixels.width as f32 / e.doc.width() as f32;
         let wanted_density = px.width as f32 / region.width().max(1.0);
-        let source = match e.doc.full_resolution() {
-            Some(full) if wanted_density > display_density || !e.doc.is_original_image() => {
-                Source {
-                    key: source_key(display.key, e.doc.image_generation()),
-                    pixels: full.as_ref(),
-                }
-            }
-            _ => Source {
+        let use_full = e.doc.full_resolution().is_some()
+            && (wanted_density > display_density * (1.0 + DENSITY_MARGIN)
+                || !e.doc.is_original_image());
+        let (source, view, dest) = if use_full {
+            let source = Source {
+                key: source_key(display.key, e.doc.image_generation()),
+                pixels: e
+                    .doc
+                    .full_resolution()
+                    .expect("use_full implies full_resolution")
+                    .as_ref(),
+            };
+            let view = View {
+                region,
+                width: px.width,
+                height: px.height,
+            };
+            (source, view, shown)
+        } else if e.doc.is_original_image() {
+            let source = Source {
                 key: display.key * 2,
                 pixels: display.pixels,
-            },
+            };
+            let view = View {
+                region: e.doc.bounds(),
+                width: display.pixels.width,
+                height: display.pixels.height,
+            };
+            (source, view, layout.image.unwrap_or(shown))
+        } else {
+            let source = Source {
+                key: display.key * 2,
+                pixels: display.pixels,
+            };
+            let view = View {
+                region,
+                width: px.width,
+                height: px.height,
+            };
+            (source, view, shown)
         };
         let revision = e.doc.revision();
         let key = (revision, source.key, view);
         let in_gesture = e.doc.in_gesture();
 
-        // Already up to date? A gesture that ended with a frozen effect region still needs one full
-        // re-render to correct it (the revision didn't change on commit), so don't short-circuit then.
-        if let Some(c) = &e.composite {
+        // Already up to date? A pan or zoom below the display density keeps the key and only moves
+        // `dest` (#58), so refresh `dest` and reuse the texture. A gesture that ended with a frozen
+        // effect region still needs one full re-render to correct it (the revision didn't change on
+        // commit), so don't short-circuit then.
+        if let Some(c) = &mut e.composite {
             let correct_frozen = c.froze && !in_gesture;
             if c.key == key && !correct_frozen {
+                c.dest = dest;
                 return Some((c.texture.id(), c.dest));
             }
         }
@@ -1226,6 +1285,7 @@ impl Editor {
                 return Some((c.texture.id(), c.dest));
             };
             let sub_view = subview(view, sub);
+            e.renders += 1;
             let mut sub_px = renderer.composite(&e.doc, &source, sub_view);
             // Opaque neighbourhood effects that only partly overlap the change can't be recomputed
             // from a slice, so freeze them: restore their pixels from the previous composite for
@@ -1269,6 +1329,7 @@ impl Editor {
         // same size reuses the allocation, a changed size reallocates. A fresh allocation is
         // transparent, so the renderer skips the clear; a reused one is cleared first.
         let size = [view.width.max(1) as usize, view.height.max(1) as usize];
+        e.renders += 1;
         match &mut e.composite {
             Some(c) => {
                 let reallocated = c.image.size != size;
