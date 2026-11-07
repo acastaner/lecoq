@@ -203,17 +203,11 @@ struct Trashed {
     waits_for_scan: bool,
 }
 
-/// Which pixels a background decode of the shown Image brings.
-#[derive(Clone, Copy, PartialEq)]
-enum Pixels {
-    Display,
-    Full,
-}
-
-/// A decode of the shown Image that brings more pixels.
+/// A display-size re-decode of the shown Image for a larger canvas (§5.2). The full-resolution
+/// decode is the editor's single one (#57), consumed through [`ShownImage::full`], not an
+/// [`Upgrade`].
 struct Upgrade {
     pending: PendingDecode,
-    pixels: Pixels,
 }
 
 /// What waits on the unsaved-changes prompt (#35, §6.4): done right away without unsaved changes,
@@ -419,9 +413,13 @@ impl LecoqApp {
                 if let Property::Magnification(factor) = property {
                     self.set_magnify_factor(factor);
                 }
-                self.editor.set_property(property, merge);
-                // §4.3, §8.3: the tools' defaults persist between runs.
-                let styles = self.editor.tool_styles_config();
+                let changed = self.editor.set_property(property, merge);
+                // §4.3, §8.3: the tools' defaults persist between runs. Only the tools the change
+                // applied to are re-serialised, not every tool on every tick (#61).
+                let styles: Vec<_> = changed
+                    .iter()
+                    .filter_map(|&tool| self.editor.tool_style_config(tool))
+                    .collect();
                 self.update_config(|config| config.tools.extend(styles));
             }
             Command::Save => self.save(),
@@ -879,17 +877,22 @@ impl LecoqApp {
         if self.fullscreen.wanted || fullscreen == Some(true) || minimised == Some(true) {
             return;
         }
-        self.update_config(|config| {
-            if let Some(maximised) = maximised {
-                config.window.maximised = maximised;
-            }
-            if !config.window.maximised
-                && let Some(inner) = inner
-            {
-                config.window.width = inner.width().round();
-                config.window.height = inner.height().round();
-            }
-        });
+        // Work out the window this frame would record and compare the three fields first, so an
+        // unchanged window (every frame of an idle app) touches nothing. The settings-change path
+        // clones and compares the whole Config, so it must run only on a real change (#61).
+        let mut window = self.config.window;
+        if let Some(maximised) = maximised {
+            window.maximised = maximised;
+        }
+        if !window.maximised
+            && let Some(inner) = inner
+        {
+            window.width = inner.width().round();
+            window.height = inner.height().round();
+        }
+        if window != self.config.window {
+            self.update_config(|config| config.window = window);
+        }
     }
 
     /// Ctrl+O. Only one open dialog at a time: asking again while it is up does nothing.
@@ -1097,7 +1100,7 @@ impl LecoqApp {
         self.error = None;
         self.message = None;
         self.editor.open_pixels(Arc::new(full));
-        let (texture, display_pixels) = upload(ctx, &display, Pixels::Display);
+        let (texture, display_pixels) = upload(ctx, &display);
         self.shown = Some(ShownImage {
             path: None,
             file_name: strings::CLIPBOARD_IMAGE.to_owned(),
@@ -1456,7 +1459,7 @@ impl LecoqApp {
         match decoded {
             Ok(image) => {
                 self.editor.open(Some(&path), image.original_size);
-                let (display, display_pixels) = upload(ctx, &image, Pixels::Display);
+                let (display, display_pixels) = upload(ctx, &image);
                 self.shown = Some(ShownImage {
                     path: Some(path),
                     file_name,
@@ -1505,31 +1508,26 @@ impl LecoqApp {
             // The animation's frames are drawn instead.
             return;
         }
-        let (texture, pixels) = upload(ctx, &image, upgrade.pixels);
-        match upgrade.pixels {
-            Pixels::Display => {
-                shown.display = texture;
-                shown.display_pixels = pixels;
-                shown.display_key = next_display_key();
-            }
-            Pixels::Full => shown.full = Some(texture),
-        }
+        let (texture, pixels) = upload(ctx, &image);
+        shown.display = texture;
+        shown.display_pixels = pixels;
+        shown.display_key = next_display_key();
     }
 
-    /// Start a decode with more pixels when the Image is drawn larger than the pixels on hand: at
-    /// Fit, a display-size re-decode for the canvas's physical size; zoomed, the full resolution
-    /// (§7.2). One at a time, never for the Image that's about to be replaced, and not before the
-    /// first paint (§1.3).
+    /// Bring more pixels when the Image is drawn larger than the pixels on hand: at Fit, a
+    /// display-size re-decode for the canvas's physical size; zoomed past it, the full-resolution
+    /// pixels (§7.2). The full resolution is the editor's single shared decode (#57): this asks for
+    /// it rather than running its own, so zooming and editing decode the file once between them.
+    /// Never for the Image that's about to be replaced, and not before the first paint (§1.3).
     fn request_pixels(&mut self, ctx: &egui::Context) {
-        if self.upgrade.is_some() || self.pending.is_some() || self.first_paint != FirstPaint::Done
-        {
+        if self.pending.is_some() || self.first_paint != FirstPaint::Done {
             return;
         }
         // After an Image operation the canvas draws the Document's own pixels, not the file's.
         if self.document().is_some_and(|d| !d.is_original_image()) {
             return;
         }
-        let (Some(layout), Some(shown)) = (self.canvas, self.shown.as_mut()) else {
+        let (Some(layout), Some(shown)) = (self.canvas, self.shown.as_ref()) else {
             return;
         };
         if shown.may_animate || shown.animation.is_some() {
@@ -1537,9 +1535,9 @@ impl LecoqApp {
             return;
         }
         // A clipboard image has no file to decode again: the composite draws its full pixels.
-        let Some(path) = shown.path.clone() else {
+        if shown.path.is_none() {
             return;
-        };
+        }
         let Some(on_screen) = layout.image_px() else {
             return;
         };
@@ -1548,25 +1546,63 @@ impl LecoqApp {
             return;
         }
         let original = shown.original_size;
-        let (pixels, max) = match self.view.zoom {
-            Zoom::Fit => (Pixels::Display, layout.area_px()),
+        match self.view.zoom {
+            Zoom::Fit => self.request_display_redecode(ctx, layout.area_px()),
             Zoom::Scale(_)
                 if u64::from(original.width) * u64::from(original.height)
                     <= FULL_RESOLUTION_LIMIT =>
             {
-                let side = ctx.input(|i| i.max_texture_side) as u32;
-                (Pixels::Full, Size::new(side, side))
+                self.upgrade_to_full(ctx)
             }
-            Zoom::Scale(_) => return,
+            // Above the full-resolution limit nothing is decoded (§4.7); the display pixels stay.
+            Zoom::Scale(_) => {}
+        }
+    }
+
+    /// Re-decode the display-size pixels for a `max`-sized canvas (a resize or a HiDPI scale the
+    /// startup decode couldn't know), one at a time.
+    fn request_display_redecode(&mut self, ctx: &egui::Context, max: Size) {
+        if self.upgrade.is_some() {
+            return;
+        }
+        let Some(shown) = self.shown.as_mut() else {
+            return;
         };
-        let target = fit_within(original, max);
+        let target = fit_within(shown.original_size, max);
         if target.width <= shown.requested.width && target.height <= shown.requested.height {
             return;
         }
         shown.requested = target;
+        let path = shown.path.clone().expect("checked by the caller");
         let pending = PendingDecode::spawn(path, move || max);
         pending.wake(ctx);
-        self.upgrade = Some(Upgrade { pending, pixels });
+        self.upgrade = Some(Upgrade { pending });
+    }
+
+    /// Build the full-resolution zoom texture from the editor's single shared decode (#57). Starts
+    /// that decode if it isn't running yet; once its pixels have landed (in the Document), uploads
+    /// them — capped at the GPU's largest texture — as [`ShownImage::full`]. The editor runs the
+    /// decode whether the first ask came from here or from the first tool use, so the file is
+    /// decoded once and both paths read the same pixels.
+    fn upgrade_to_full(&mut self, ctx: &egui::Context) {
+        self.editor.request_full_decode();
+        let Some(full) = self
+            .editor
+            .document()
+            .and_then(|d| d.full_resolution())
+            .cloned()
+        else {
+            // Still decoding (the editor is busy meanwhile): the texture is built when it lands.
+            return;
+        };
+        let Some(shown) = self.shown.as_mut() else {
+            return;
+        };
+        if shown.full.is_some() {
+            return;
+        }
+        let side = ctx.input(|i| i.max_texture_side) as u32;
+        shown.full = Some(full_texture(ctx, &full, Size::new(side, side)));
     }
 
     /// Start decoding the frames of a GIF or WebP, after the first paint (§1.3).
@@ -2004,27 +2040,36 @@ fn same_file(a: &Path, b: &Path) -> bool {
 fn upload(
     ctx: &egui::Context,
     image: &DisplayImage,
-    kind: Pixels,
 ) -> (egui::TextureHandle, Arc<lecoq_core::Pixels>) {
     // The pixels are already upload-ready (premultiplied on the decode pool, #56): the switch path
-    // shares the cache's `Arc` and uploads, with no conversion on the UI thread. `display_pixels`
-    // is that same `Arc`, so the shown Image's pixels live once, counted against the cache's cap.
+    // shares the cache's `Arc` and uploads, with no conversion on the UI thread. The shown Image's
+    // `display_pixels` field is that same `Arc`, so the pixels live once, counted against the cap.
     let pixels = Arc::clone(&image.pixels);
-    let (name, options) = match kind {
-        Pixels::Display => ("image", egui::TextureOptions::LINEAR),
-        // Drawn anywhere from just above the display size down: mipmaps keep it from aliasing.
-        Pixels::Full => (
-            "image-full",
-            egui::TextureOptions {
-                mipmap_mode: Some(egui::TextureFilter::Linear),
-                ..egui::TextureOptions::LINEAR
-            },
-        ),
-    };
     (
-        ctx.load_texture(name, color_image(&pixels), options),
+        ctx.load_texture("image", color_image(&pixels), egui::TextureOptions::LINEAR),
         pixels,
     )
+}
+
+/// Upload the editor's shared full-resolution `pixels` as the zoom texture (#57, §7.2), reduced to
+/// fit within `max` (the GPU's largest texture) when the Image is larger. Drawn anywhere from just
+/// above the display size down, so mipmaps keep it from aliasing.
+fn full_texture(
+    ctx: &egui::Context,
+    pixels: &lecoq_core::Pixels,
+    max: Size,
+) -> egui::TextureHandle {
+    let size = Size::new(pixels.width, pixels.height);
+    let options = egui::TextureOptions {
+        mipmap_mode: Some(egui::TextureFilter::Linear),
+        ..egui::TextureOptions::LINEAR
+    };
+    if fit_within(size, max) == size {
+        ctx.load_texture("image-full", color_image(pixels), options)
+    } else {
+        let reduced = lecoq_codec::reduced_to_fit(pixels, max);
+        ctx.load_texture("image-full", color_image(&reduced), options)
+    }
 }
 
 /// The egui `ColorImage` that wraps premultiplied display [`lecoq_core::Pixels`] for a texture

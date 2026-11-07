@@ -566,13 +566,13 @@ impl Editor {
 
     /// Restyle the selection, and make the change the default of the tools that create the
     /// selected Annotations (§4.3). With nothing selected, it is the active tool's default.
-    pub fn set_property(&mut self, property: Property, merge: bool) {
+    pub fn set_property(&mut self, property: Property, merge: bool) -> Vec<ToolId> {
         // While editing text, the box being edited is restyled within the session's step, and the
         // change becomes the text tool's default (§4.3).
         if let (Some(session), Some(e)) = (&self.text, &mut self.edited) {
             session.restyle(&mut e.doc, property.clone());
             self.styles.entry(ToolId::Text).or_default().set(property);
-            return;
+            return vec![ToolId::Text];
         }
         let mut tools = vec![self.tool];
         if let Some(e) = self.edited.as_mut().filter(|e| !e.doc.in_gesture())
@@ -585,26 +585,28 @@ impl Editor {
                 .collect();
         }
         let kind = property.kind();
+        let mut changed = Vec::new();
         for tool in tools {
             if tool.properties().contains(&kind) {
                 self.styles
                     .entry(tool)
                     .or_insert_with(|| tool.default_style())
                     .set(property.clone());
+                if !changed.contains(&tool) {
+                    changed.push(tool);
+                }
             }
         }
+        changed
     }
 
-    /// The tools' styles as `tools.<tool>` tables for `config.toml` (§8.3): the ones changed (or
-    /// read from the config) this run.
-    pub fn tool_styles_config(&self) -> BTreeMap<String, toml::Table> {
-        self.styles
-            .iter()
-            .filter_map(|(tool, style)| {
-                let table = toml::Table::try_from(style).ok()?;
-                Some((tool.config_key().to_owned(), table))
-            })
-            .collect()
+    /// One tool's style as its `tools.<tool>` table for `config.toml` (§8.3): the property command
+    /// persists only the tools a change applied to, rather than every tool's style on every tick
+    /// (#61). `None` for a tool with no style set this run (or read from the config), or one that
+    /// doesn't serialise.
+    pub fn tool_style_config(&self, tool: ToolId) -> Option<(String, toml::Table)> {
+        let table = toml::Table::try_from(self.styles.get(&tool)?).ok()?;
+        Some((tool.config_key().to_owned(), table))
     }
 
     /// Set a tool's default for its next Annotations, whatever is selected (settings seed them).
@@ -623,6 +625,13 @@ impl Editor {
     /// The edited Image, when no pointer gesture is in progress.
     fn edited_idle(&mut self) -> Option<&mut Edited> {
         self.edited.as_mut().filter(|e| !e.doc.in_gesture())
+    }
+
+    /// The zoom upgrade needs the full-resolution pixels (#57): run the one shared decode if it
+    /// isn't running or landed already. The same decode as the first tool use, so whichever asks
+    /// first runs it and the other adopts its pixels through [`Document::full_resolution`].
+    pub fn request_full_decode(&mut self) {
+        self.start_full_decode();
     }
 
     /// §4.7: the first tool use starts the full-resolution decode, in the background.
