@@ -225,6 +225,10 @@ pub struct Config {
     #[serde(deserialize_with = "jpeg_quality_clamped")]
     pub jpeg_quality: u8,
     pub magnify_factor: f32,
+    /// The last Target folder a Copy to or Move to chose (§8.3, issue #53), where the next picker
+    /// starts; shared by both operations. Absent until the first successful pick, and tolerant of
+    /// its absence in a file written before it existed.
+    pub last_target: Option<PathBuf>,
     // Tables come after the plain keys in TOML.
     pub window: WindowConfig,
     /// `tools.<tool>`: each tool's last style (§4.3), keyed by the tool's config name
@@ -240,6 +244,7 @@ impl Default for Config {
             follow_files: false,
             jpeg_quality: 92,
             magnify_factor: 2.0,
+            last_target: None,
             window: WindowConfig::default(),
             tools: BTreeMap::new(),
         }

@@ -205,6 +205,30 @@ fn writes_are_debounced() {
 }
 
 #[test]
+fn the_last_target_folder_survives_a_save_and_load_round_trip() {
+    use std::path::PathBuf;
+
+    for last_target in [Some(PathBuf::from("/home/me/Pictures/edited")), None] {
+        let config = Config {
+            last_target: last_target.clone(),
+            ..Config::default()
+        };
+        let reloaded = Config::parse(&config.to_toml()).unwrap();
+        assert_eq!(reloaded.last_target, last_target);
+    }
+}
+
+#[test]
+fn a_file_with_no_last_target_key_loads_with_none() {
+    let store = Arc::new(MemoryConfigStore::with_text(
+        "version = 1\njpeg_quality = 80\n",
+    ));
+    let app = TestApp::with_platform(platform_with(&store));
+
+    assert_eq!(app.harness.state().config().last_target, None);
+}
+
+#[test]
 fn no_file_gives_the_defaults() {
     let app = TestApp::new();
 
