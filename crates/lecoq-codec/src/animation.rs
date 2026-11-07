@@ -10,7 +10,9 @@ use image::codecs::webp::WebPDecoder;
 use image::metadata::Orientation;
 use image::{AnimationDecoder, ImageDecoder, ImageFormat, ImageReader};
 
-use crate::{DecodeError, Decoded, DisplayImage, Pixels, Size};
+use lecoq_core::{PixelData, Pixels};
+
+use crate::{DecodeError, Decoded, DisplayImage, Size};
 
 /// Delays at or under this are played as [`SHORT_DELAY_SUBSTITUTE`], as browsers do: many GIFs
 /// say 0 or 10 ms and were made to be shown at 100 ms.
@@ -47,9 +49,14 @@ impl Iterator for Frames {
             delay
         };
         let buffer = frame.into_buffer();
+        let (width, height) = (buffer.width(), buffer.height());
         let decoded = Decoded {
-            stored: Size::new(buffer.width(), buffer.height()),
-            pixels: Pixels::Rgba(buffer.into_raw()),
+            stored: Size::new(width, height),
+            pixels: Pixels {
+                width,
+                height,
+                data: PixelData::Rgba(buffer.into_raw()),
+            },
             orientation: self.orientation,
             icc: self.icc.clone(),
             may_animate: true,

@@ -14,7 +14,9 @@ use image::codecs::png::PngEncoder;
 use image::metadata::Orientation;
 use image::{ExtendedColorType, ImageDecoder, ImageEncoder, ImageFormat, ImageReader};
 
-use crate::{Pixels, Size, colour};
+use lecoq_core::{PixelData, Pixels};
+
+use crate::{Size, colour};
 
 /// Lossy WebP quality (libwebp's 0–100 scale). There is no setting for it in v1 (§8.3).
 pub const WEBP_QUALITY: f32 = 90.0;
@@ -154,9 +156,10 @@ pub fn save(
 }
 
 fn color_type(pixels: &Pixels) -> (&[u8], ExtendedColorType) {
-    match pixels {
-        Pixels::Rgb(rgb) => (rgb, ExtendedColorType::Rgb8),
-        Pixels::Rgba(rgba) => (rgba, ExtendedColorType::Rgba8),
+    match &pixels.data {
+        PixelData::Rgb(rgb) => (rgb, ExtendedColorType::Rgb8),
+        PixelData::Rgba(rgba) => (rgba, ExtendedColorType::Rgba8),
+        PixelData::RgbaPremultiplied(rgba) => (rgba, ExtendedColorType::Rgba8),
     }
 }
 
@@ -196,9 +199,9 @@ fn encode_jpeg(
 ) -> Result<Vec<u8>, SaveError> {
     // JPEG has no alpha: transparent areas become white.
     let rgb;
-    let data = match pixels {
-        Pixels::Rgb(rgb) => rgb.as_slice(),
-        Pixels::Rgba(rgba) => {
+    let data = match &pixels.data {
+        PixelData::Rgb(rgb) => rgb.as_slice(),
+        PixelData::Rgba(rgba) | PixelData::RgbaPremultiplied(rgba) => {
             rgb = over_white(rgba);
             rgb.as_slice()
         }
@@ -235,9 +238,11 @@ fn encode_webp(
     exif: Option<Vec<u8>>,
     lossless: bool,
 ) -> Result<Vec<u8>, SaveError> {
-    let encoder = match pixels {
-        Pixels::Rgb(rgb) => webp::Encoder::from_rgb(rgb, size.width, size.height),
-        Pixels::Rgba(rgba) => webp::Encoder::from_rgba(rgba, size.width, size.height),
+    let encoder = match &pixels.data {
+        PixelData::Rgb(rgb) => webp::Encoder::from_rgb(rgb, size.width, size.height),
+        PixelData::Rgba(rgba) | PixelData::RgbaPremultiplied(rgba) => {
+            webp::Encoder::from_rgba(rgba, size.width, size.height)
+        }
     };
     let encoded = encoder
         .encode_simple(lossless, WEBP_QUALITY)
@@ -245,7 +250,7 @@ fn encode_webp(
     Ok(webp_container(
         &encoded,
         size,
-        matches!(pixels, Pixels::Rgba(_)),
+        !matches!(pixels.data, PixelData::Rgb(_)),
         icc.as_deref(),
         exif.as_deref(),
     ))

@@ -126,9 +126,20 @@ pub(crate) mod pixels_serde {
     }
 
     pub fn serialize<S: Serializer>(pixels: &Arc<Pixels>, s: S) -> Result<S::Ok, S::Error> {
-        let (channels, data) = match &pixels.data {
+        // An Inset's pixels are full-resolution and straight; premultiplied pixels never reach the
+        // clipboard, but straighten defensively so the wire format stays 3 or 4 straight channels.
+        let straightened;
+        let data = match &pixels.data {
+            PixelData::Rgb(_) | PixelData::Rgba(_) => &pixels.data,
+            PixelData::RgbaPremultiplied(_) => {
+                straightened = pixels.straight();
+                &straightened.data
+            }
+        };
+        let (channels, data) = match data {
             PixelData::Rgb(rgb) => (3, rgb),
             PixelData::Rgba(rgba) => (4, rgba),
+            PixelData::RgbaPremultiplied(_) => unreachable!("straight() is never premultiplied"),
         };
         Encoded {
             width: pixels.width,
