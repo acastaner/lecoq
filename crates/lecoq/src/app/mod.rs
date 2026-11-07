@@ -32,7 +32,9 @@ use crate::strings;
 use crate::tools::ToolId;
 use crate::ui::help_dialog::{self, HelpDialog};
 use crate::ui::resize_dialog::{self, ResizeDialog};
-use crate::ui::{canvas, menu_bar, property_bar, status_bar, tool_strip, unsaved_dialog};
+use crate::ui::{
+    canvas, file_op_warning, menu_bar, property_bar, status_bar, tool_strip, unsaved_dialog,
+};
 use crate::view::{View, ZOOM_STEP, Zoom};
 
 /// The largest Image whose full-resolution pixels are decoded (§4.7). Larger ones are view-only and
@@ -316,6 +318,9 @@ pub struct LecoqApp {
     last_target: Option<PathBuf>,
     /// The right-click Context menu while it is open, anchored at where it opened (ADR 0008).
     context_menu: Option<egui::Pos2>,
+    /// The Copy to / Move to warning modal while it is up (ADR 0009): the outcome-specific message
+    /// to show. Set for every outcome that did not place the file; successes keep the status bar.
+    file_op_warning: Option<String>,
 }
 
 impl LecoqApp {
@@ -370,6 +375,7 @@ impl LecoqApp {
             folder_dialog: None,
             last_target: None,
             context_menu: None,
+            file_op_warning: None,
         };
         if from_clipboard {
             app.execute(Command::Paste);
@@ -534,6 +540,27 @@ impl LecoqApp {
         }
     }
 
+    /// Raise the Copy to / Move to warning modal (ADR 0009) with `body`: an outcome that did not
+    /// place the file as asked, worded for the case.
+    fn warn_file_op(&mut self, body: String) {
+        self.file_op_warning = Some(body);
+    }
+
+    /// The Copy to / Move to warning, while it is up: a dismiss-only modal (ADR 0009).
+    fn file_op_warning(&mut self, ctx: &egui::Context) {
+        let Some(body) = &self.file_op_warning else {
+            return;
+        };
+        if file_op_warning::show(ctx, body) {
+            self.file_op_warning = None;
+        }
+    }
+
+    /// The Copy to / Move to warning's message, while it is up (`None` otherwise): for tests.
+    pub fn file_op_warning_message(&self) -> Option<&str> {
+        self.file_op_warning.as_deref()
+    }
+
     /// The selection box (dashed, with 8 handles) as painted last frame, in points.
     pub fn selection_box(&self) -> Option<egui::Rect> {
         self.editor.selection_box()
@@ -600,6 +627,7 @@ impl LecoqApp {
             || self.resize_dialog.is_some()
             || self.save.overwrite_prompt.is_some()
             || self.help_dialog.is_some()
+            || self.file_op_warning.is_some()
     }
 
     // ---- The unsaved-changes flow (#35, §6.4) ----
@@ -713,6 +741,7 @@ impl LecoqApp {
             || self.save.dialog.is_some()
             || self.save.queued.is_some()
             || self.save.overwrite_prompt.is_some()
+            || self.file_op_warning.is_some()
         {
             return;
         }
@@ -1280,11 +1309,13 @@ impl LecoqApp {
                 self.post_message(strings::copied_to(&folder_name));
             }
             // Copy into a folder that already holds the name, its own folder included (stories
-            // 27, 28).
+            // 27, 28): the copy did not happen, so warn rather than whisper (ADR 0009).
             Ok(lecoq_platform::Transfer::Exists | lecoq_platform::Transfer::AlreadyThere) => {
-                self.post_message(strings::already_exists(&name, &folder_name));
+                self.warn_file_op(strings::already_exists(&name, &folder_name));
             }
-            Err(reason) => self.post_message(strings::cant_copy_file(&name, &reason)),
+            // A copy never removes an original, so the cross-device half-success can't arise here.
+            Ok(lecoq_platform::Transfer::MovedButOriginalRemains { .. }) => {}
+            Err(reason) => self.warn_file_op(strings::cant_copy_file(&name, &reason)),
         }
     }
 
@@ -1309,12 +1340,24 @@ impl LecoqApp {
                 }
                 self.post_message(strings::moved_to(&folder_name));
             }
-            // The file is already in that folder (story 29): nothing to do, nothing to say.
-            Ok(lecoq_platform::Transfer::AlreadyThere) => {}
-            Ok(lecoq_platform::Transfer::Exists) => {
-                self.post_message(strings::already_exists(&name, &folder_name));
+            // The copy landed but the original couldn't be removed (story 31): warn honestly, and
+            // do not Follow — the move only half happened, so the window stays put (ADR 0009).
+            Ok(lecoq_platform::Transfer::MovedButOriginalRemains { reason, .. }) => {
+                self.warn_file_op(strings::moved_copy_couldnt_remove(
+                    &name,
+                    &folder_name,
+                    &reason,
+                ));
             }
-            Err(reason) => self.post_message(strings::cant_move_file(&name, &reason)),
+            // The file is already in that folder (story 29): harmless, but no longer silent — a
+            // neutral line so the outcome is seen like the rest (ADR 0009).
+            Ok(lecoq_platform::Transfer::AlreadyThere) => {
+                self.warn_file_op(strings::already_in_folder(&name, &folder_name));
+            }
+            Ok(lecoq_platform::Transfer::Exists) => {
+                self.warn_file_op(strings::already_exists(&name, &folder_name));
+            }
+            Err(reason) => self.warn_file_op(strings::cant_move_file(&name, &reason)),
         }
     }
 
@@ -1769,6 +1812,7 @@ impl eframe::App for LecoqApp {
         }
         self.unsaved_prompt(&ctx);
         self.overwrite_prompt(&ctx);
+        self.file_op_warning(&ctx);
         self.poll_open_dialog();
         self.poll_folder_dialog();
         self.poll_save_dialog();
