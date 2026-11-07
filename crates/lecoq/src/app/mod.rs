@@ -311,8 +311,8 @@ pub struct LecoqApp {
     incoming: Option<PendingIncoming>,
     /// The Copy to / Move to folder picker while it is up, and which operation it is for (#53).
     folder_dialog: Option<(FolderOp, mpsc::Receiver<Option<PathBuf>>)>,
-    /// The last Target folder a Copy to / Move to chose this session, where the next picker starts
-    /// (stories 7, 8). Session-only: not persisted across runs.
+    /// The last Target folder a Copy to / Move to chose, where the next picker starts (stories 7,
+    /// 8). Seeded from and persisted to `config.toml`, so it survives a restart.
     last_target: Option<PathBuf>,
     /// The right-click Context menu while it is open, anchored at where it opened (ADR 0008).
     context_menu: Option<egui::Pos2>,
@@ -338,6 +338,7 @@ impl LecoqApp {
             Property::Magnification(launch.config.magnify_factor),
         );
         let from_clipboard = launch.from_clipboard;
+        let last_target = launch.config.last_target.clone();
         let mut app = Self {
             ctx: cc.egui_ctx.clone(),
             config_saver: ConfigSaver::new(launch.platform.config.clone()),
@@ -368,7 +369,7 @@ impl LecoqApp {
             copy: CopyState::default(),
             incoming: None,
             folder_dialog: None,
-            last_target: None,
+            last_target,
             context_menu: None,
         };
         if from_clipboard {
@@ -1215,12 +1216,17 @@ impl LecoqApp {
         let Some(path) = self.path.clone() else {
             return;
         };
-        let start = self.last_target.clone().unwrap_or_else(|| {
-            path.parent()
-                .filter(|d| !d.as_os_str().is_empty())
-                .map(Path::to_owned)
-                .unwrap_or_default()
-        });
+        // The remembered folder only if it is still there; otherwise the Image's own folder.
+        let start = self
+            .last_target
+            .clone()
+            .filter(|folder| folder.is_dir())
+            .unwrap_or_else(|| {
+                path.parent()
+                    .filter(|d| !d.as_os_str().is_empty())
+                    .map(Path::to_owned)
+                    .unwrap_or_default()
+            });
         let title = match op {
             FolderOp::Copy => strings::COPY_TO_DIALOG_TITLE,
             FolderOp::Move => strings::MOVE_TO_DIALOG_TITLE,
@@ -1253,8 +1259,9 @@ impl LecoqApp {
         let Some(folder) = answer else {
             return;
         };
-        // The next picker this session starts here (story 7).
+        // The next picker starts here (story 7), now and after a restart.
         self.last_target = Some(folder.clone());
+        self.update_config(|config| config.last_target = Some(folder.clone()));
         let then = match op {
             FolderOp::Copy => Proceed::CopyTo(folder),
             FolderOp::Move => Proceed::MoveTo(folder),
