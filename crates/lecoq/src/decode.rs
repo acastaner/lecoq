@@ -7,7 +7,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use lecoq_codec::{DecodeError, DisplayImage, Size};
-use lecoq_core::{PixelData, Pixels};
+use lecoq_core::Pixels;
 
 pub type DecodeResult = Result<DisplayImage, DecodeError>;
 pub type FullDecodeResult = Result<Pixels, DecodeError>;
@@ -121,14 +121,7 @@ impl PendingFullDecode {
 pub(crate) fn decode_full(path: &Path) -> FullDecodeResult {
     lecoq_codec::decode(path).map(|d| {
         let size = d.size();
-        let image = d.into_display(size);
-        Pixels {
-            width: image.size.width,
-            height: image.size.height,
-            data: match image.pixels {
-                lecoq_codec::Pixels::Rgb(rgb) => PixelData::Rgb(rgb),
-                lecoq_codec::Pixels::Rgba(rgba) => PixelData::Rgba(rgba),
-            },
-        }
+        // One pixel type end to end (#64): the decode already lands in `lecoq_core::Pixels`.
+        d.into_display(size).pixels
     })
 }

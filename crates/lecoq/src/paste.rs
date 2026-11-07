@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lecoq_codec::{DisplayImage, Size};
-use lecoq_core::{CopiedAnnotation, PixelData, Pixels};
+use lecoq_core::{CopiedAnnotation, Pixels};
 use lecoq_platform::Clipboard;
 use lecoq_platform::clipboard::IMAGE_FORMATS;
 
@@ -100,15 +100,9 @@ fn image(decoded: lecoq_codec::Decoded, destination: Destination, display_box: S
     let size = decoded.size();
     let full = decoded.into_display(size);
     let display = (destination == Destination::Window).then(|| full.reduced(display_box));
+    // One pixel type end to end (#64): the decode's pixels are already `lecoq_core::Pixels`.
     Incoming::Image {
-        full: Pixels {
-            width: full.size.width,
-            height: full.size.height,
-            data: match full.pixels {
-                lecoq_codec::Pixels::Rgb(rgb) => PixelData::Rgb(rgb),
-                lecoq_codec::Pixels::Rgba(rgba) => PixelData::Rgba(rgba),
-            },
-        },
+        full: full.pixels,
         display,
     }
 }

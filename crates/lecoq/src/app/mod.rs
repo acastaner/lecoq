@@ -136,9 +136,10 @@ pub(crate) struct ShownImage {
     /// The display-size decode (§5.2), re-decoded larger if the canvas outgrows it (a resize, or a
     /// HiDPI scale factor the startup decode couldn't know).
     display: egui::TextureHandle,
-    /// `display`'s pixels, shared with egui (no copy). Tests read them; so will the on-screen
-    /// composite (§7.2).
-    display_pixels: Arc<egui::ColorImage>,
+    /// `display`'s pixels: premultiplied, upload-ready [`lecoq_core::Pixels`] (#64, §7.2), the one
+    /// pixel type. The display texture is uploaded from these; the on-screen composite and the
+    /// save fallback read them, and tests peek at them through [`LecoqApp::shown_pixel`].
+    display_pixels: Arc<lecoq_core::Pixels>,
     /// Identifies `display_pixels` for the Skia renderer's cache (a new key per decode).
     display_key: u64,
     /// The full-resolution decode, once zoomed past the display-size one (§7.2). Capped at the GPU's
@@ -182,7 +183,7 @@ impl ShownImage {
         };
         if let Some(first) = animation.first_frame() {
             self.display
-                .set(first.clone(), egui::TextureOptions::LINEAR);
+                .set(color_image(first), egui::TextureOptions::LINEAR);
             self.display_pixels = first.clone();
             self.display_key = next_display_key();
         }
@@ -984,12 +985,11 @@ impl LecoqApp {
 
     /// The display-size decode, when it is the full resolution: what a save or copy uses when the
     /// file can't be decoded any more (deleted or changed on disk, #21).
-    fn full_size_display_pixels(&self) -> Option<Arc<egui::ColorImage>> {
+    fn full_size_display_pixels(&self) -> Option<Arc<lecoq_core::Pixels>> {
         self.shown
             .as_ref()
             .filter(|s| {
-                let [w, h] = s.display_pixels.size;
-                Size::new(w as u32, h as u32) == s.original_size
+                Size::new(s.display_pixels.width, s.display_pixels.height) == s.original_size
             })
             .map(|s| s.display_pixels.clone())
     }
@@ -1636,7 +1636,7 @@ impl LecoqApp {
         if let Some(frame) = animation.tick(now, ctx) {
             shown
                 .display
-                .set(frame.clone(), egui::TextureOptions::LINEAR);
+                .set(color_image(&frame), egui::TextureOptions::LINEAR);
             shown.display_pixels = frame;
             shown.display_key = next_display_key();
         }
@@ -1744,9 +1744,27 @@ impl LecoqApp {
     /// `None` when no Image is shown or `(x, y)` is outside it.
     pub fn shown_pixel(&self, x: u32, y: u32) -> Option<egui::Color32> {
         let pixels = &self.shown.as_ref()?.display_pixels;
-        let [w, h] = pixels.size;
+        let (w, h) = (pixels.width as usize, pixels.height as usize);
         let (x, y) = (x as usize, y as usize);
-        (x < w && y < h).then(|| pixels.pixels[y * w + x])
+        if x >= w || y >= h {
+            return None;
+        }
+        // Display pixels are premultiplied RGBA; match the other layouts for totality.
+        let color = match &pixels.data {
+            lecoq_core::PixelData::RgbaPremultiplied(d) => {
+                let i = (y * w + x) * 4;
+                egui::Color32::from_rgba_premultiplied(d[i], d[i + 1], d[i + 2], d[i + 3])
+            }
+            lecoq_core::PixelData::Rgba(d) => {
+                let i = (y * w + x) * 4;
+                egui::Color32::from_rgba_unmultiplied(d[i], d[i + 1], d[i + 2], d[i + 3])
+            }
+            lecoq_core::PixelData::Rgb(d) => {
+                let i = (y * w + x) * 3;
+                egui::Color32::from_rgb(d[i], d[i + 1], d[i + 2])
+            }
+        };
+        Some(color)
     }
 
     fn status_bar(&self) -> status_bar::StatusBar<'_> {
@@ -1903,7 +1921,7 @@ impl eframe::App for LecoqApp {
         let editor = &mut self.editor;
         let display = self.shown.as_ref().map(|s| DisplayPixels {
             key: s.display_key,
-            image: &s.display_pixels,
+            pixels: &s.display_pixels,
         });
         self.canvas = Some(canvas::show(
             ui,
@@ -1987,8 +2005,8 @@ fn upload(
     ctx: &egui::Context,
     image: &DisplayImage,
     kind: Pixels,
-) -> (egui::TextureHandle, Arc<egui::ColorImage>) {
-    let pixels = Arc::new(color_image(image));
+) -> (egui::TextureHandle, Arc<lecoq_core::Pixels>) {
+    let pixels = Arc::new(display_pixels(image));
     let (name, options) = match kind {
         Pixels::Display => ("image", egui::TextureOptions::LINEAR),
         // Drawn anywhere from just above the display size down: mipmaps keep it from aliasing.
@@ -2000,14 +2018,28 @@ fn upload(
             },
         ),
     };
-    (ctx.load_texture(name, pixels.clone(), options), pixels)
+    (
+        ctx.load_texture(name, color_image(&pixels), options),
+        pixels,
+    )
 }
 
-pub(crate) fn color_image(image: &DisplayImage) -> egui::ColorImage {
-    let size = [image.size.width as usize, image.size.height as usize];
-    match &image.pixels {
-        lecoq_codec::Pixels::Rgb(rgb) => egui::ColorImage::from_rgb(size, rgb),
-        lecoq_codec::Pixels::Rgba(rgba) => egui::ColorImage::from_rgba_unmultiplied(size, rgba),
+/// A display-size decode as premultiplied, upload-ready [`lecoq_core::Pixels`] (#64, §7.2): the
+/// one pixel type the display texture, the screen composite and the save fallback all share.
+pub(crate) fn display_pixels(image: &DisplayImage) -> lecoq_core::Pixels {
+    image.pixels.premultiplied()
+}
+
+/// The egui `ColorImage` that wraps premultiplied display [`lecoq_core::Pixels`] for a texture
+/// upload, with no re-premultiplication (the app keeps wrapping, #64).
+pub(crate) fn color_image(pixels: &lecoq_core::Pixels) -> egui::ColorImage {
+    let size = [pixels.width as usize, pixels.height as usize];
+    match &pixels.data {
+        lecoq_core::PixelData::RgbaPremultiplied(rgba) => {
+            egui::ColorImage::from_rgba_premultiplied(size, rgba)
+        }
+        lecoq_core::PixelData::Rgb(rgb) => egui::ColorImage::from_rgb(size, rgb),
+        lecoq_core::PixelData::Rgba(rgba) => egui::ColorImage::from_rgba_unmultiplied(size, rgba),
     }
 }
 

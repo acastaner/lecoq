@@ -387,7 +387,9 @@ fn an_inset_round_trips_through_the_json_with_its_pixels() {
     let (a, b) = (&insets[0], &insets[1]);
     assert_eq!((b.pixels.width, b.pixels.height), (8, 6));
     let bytes = |p: &lecoq_core::Pixels| match &p.data {
-        lecoq_core::PixelData::Rgb(d) | lecoq_core::PixelData::Rgba(d) => d.clone(),
+        lecoq_core::PixelData::Rgb(d)
+        | lecoq_core::PixelData::Rgba(d)
+        | lecoq_core::PixelData::RgbaPremultiplied(d) => d.clone(),
     };
     assert_eq!(bytes(&a.pixels), bytes(&b.pixels));
     assert_eq!(b.rect.min.x - a.rect.min.x, 10.0, "offset");

@@ -12,10 +12,10 @@ use std::sync::{Arc, mpsc};
 use egui::CursorIcon;
 use lecoq_codec::Size;
 use lecoq_core::{
-    AnnotationId, CopiedAnnotation, Document, HISTORY_PIXEL_CAP, Handle, Inset, PixelData, Pixels,
-    Point, Property, PropertyKind, Rect, Restack, Shape, Style, Vector,
+    AnnotationId, CopiedAnnotation, Document, HISTORY_PIXEL_CAP, Handle, Inset, Pixels, Point,
+    Property, PropertyKind, Rect, Restack, Shape, Style, Vector,
 };
-use lecoq_render::{Composite, Renderer, Source, SourcePixels, View};
+use lecoq_render::{Composite, Renderer, Source, View};
 
 use crate::decode::PendingFullDecode;
 use crate::tools::select::End;
@@ -49,7 +49,8 @@ pub const DUPLICATE_OFFSET: f32 = 10.0;
 pub struct DisplayPixels<'a> {
     /// Unique per decode: the renderer's cache key.
     pub key: u64,
-    pub image: &'a egui::ColorImage,
+    /// The display-size pixels, premultiplied and upload-ready (#64, §7.2).
+    pub pixels: &'a Pixels,
 }
 
 /// The editor's state for the open Image.
@@ -1133,25 +1134,18 @@ impl Editor {
             height: px.height,
         };
         // Zoomed in past the display-size decode, draw from the full-resolution pixels (§7.2).
-        let display_density = display.image.width() as f32 / e.doc.width() as f32;
+        let display_density = display.pixels.width as f32 / e.doc.width() as f32;
         let wanted_density = px.width as f32 / region.width().max(1.0);
         let source = match e.doc.full_resolution() {
             Some(full) if wanted_density > display_density || !e.doc.is_original_image() => {
                 Source {
                     key: source_key(display.key, e.doc.image_generation()),
-                    width: full.width,
-                    height: full.height,
-                    pixels: match &full.data {
-                        PixelData::Rgb(rgb) => SourcePixels::Rgb(rgb),
-                        PixelData::Rgba(rgba) => SourcePixels::Rgba(rgba),
-                    },
+                    pixels: full.as_ref(),
                 }
             }
             _ => Source {
                 key: display.key * 2,
-                width: display.image.width() as u32,
-                height: display.image.height() as u32,
-                pixels: SourcePixels::RgbaPremultiplied(display.image.as_raw()),
+                pixels: display.pixels,
             },
         };
         let revision = e.doc.revision();
