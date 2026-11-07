@@ -27,16 +27,19 @@ pub trait NameOrder: Send + Sync {
     fn compare(&self, a: &str, b: &str) -> Ordering;
 
     /// The indices of `names` in this order. Implementations with a sort-key form override this so
-    /// that each name's key is built once.
-    fn sorted_indices(&self, names: &[String]) -> Vec<usize> {
+    /// that each name's key is built once. Takes borrowed names, so the directory scan sorts
+    /// without copying every name (#66).
+    fn sorted_indices(&self, names: &[&str]) -> Vec<usize> {
         let mut indices: Vec<usize> = (0..names.len()).collect();
-        indices.sort_by(|&a, &b| self.compare(&names[a], &names[b]));
+        indices.sort_by(|&a, &b| self.compare(names[a], names[b]));
         indices
     }
 
     /// Sort file names into this order.
     fn sort(&self, names: &mut Vec<String>) {
-        let indices = self.sorted_indices(names);
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let indices = self.sorted_indices(&refs);
+        drop(refs);
         let mut taken: Vec<Option<String>> = names.drain(..).map(Some).collect();
         names.extend(indices.into_iter().filter_map(|i| taken[i].take()));
     }

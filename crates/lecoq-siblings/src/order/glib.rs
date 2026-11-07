@@ -166,13 +166,13 @@ impl NameOrder for GlibOrder {
             .then_with(|| a.cmp(b))
     }
 
-    fn sorted_indices(&self, names: &[String]) -> Vec<usize> {
+    fn sorted_indices(&self, names: &[&str]) -> Vec<usize> {
         let keys: Vec<(bool, Vec<u8>)> = names
             .iter()
-            .map(|name| (sorts_last(name), self.collate_key(name)))
+            .map(|&name| (sorts_last(name), self.collate_key(name)))
             .collect();
         let mut indices: Vec<usize> = (0..names.len()).collect();
-        indices.sort_by(|&a, &b| keys[a].cmp(&keys[b]).then_with(|| names[a].cmp(&names[b])));
+        indices.sort_by(|&a, &b| keys[a].cmp(&keys[b]).then_with(|| names[a].cmp(names[b])));
         indices
     }
 }
