@@ -18,26 +18,15 @@ pub mod text;
 pub use bounds::{drawn_bounds, is_opaque_effect};
 pub use resample::resample;
 
-use lecoq_core::{AnnotationId, Document, Rect};
+use lecoq_core::{AnnotationId, Document, PixelData, Pixels, Rect};
 use skia_safe as sk;
 
-/// Pixels to draw the Image from: the display-size decode, or the full-resolution pixels.
+/// Pixels to draw the Image from: the display-size decode, or the full-resolution pixels (#64).
 pub struct Source<'a> {
     /// Identifies these pixels: the renderer keeps them converted between calls with the same key.
     pub key: u64,
-    pub width: u32,
-    pub height: u32,
-    pub pixels: SourcePixels<'a>,
-}
-
-/// 8-bit sRGB, tightly packed, row-major.
-#[derive(Clone, Copy)]
-pub enum SourcePixels<'a> {
-    Rgb(&'a [u8]),
-    /// Straight (not premultiplied) alpha.
-    Rgba(&'a [u8]),
-    /// Premultiplied alpha, as egui keeps its images.
-    RgbaPremultiplied(&'a [u8]),
+    /// The one pixel buffer ([`to_skia`] turns any of its layouts into a Skia image).
+    pub pixels: &'a Pixels,
 }
 
 /// What to render: `region` of the Image (in Image pixels) scaled onto `width`×`height` pixels.
@@ -113,7 +102,7 @@ impl Renderer {
             .as_ref()
             .is_none_or(|(key, _)| *key != source.key)
         {
-            self.source = Some((source.key, to_skia_image(source)));
+            self.source = Some((source.key, to_skia(source.pixels)));
         }
         &self.source.as_ref().expect("just set").1
     }
@@ -156,25 +145,29 @@ impl Default for Renderer {
     }
 }
 
-fn to_skia_image(source: &Source<'_>) -> sk::Image {
-    let (data, alpha) = match source.pixels {
-        SourcePixels::Rgb(rgb) => {
-            let mut rgba = Vec::with_capacity(source.width as usize * source.height as usize * 4);
+/// The one conversion from a lecoq [`Pixels`] to a Skia image (#64): the [`Renderer`]'s source
+/// cache, [`resample`] and the Inset cache all go through it, so the RGB→RGBA expansion and the
+/// alpha handling live in one place. RGB expands to opaque RGBA; straight RGBA stays straight
+/// (`Unpremul`); premultiplied RGBA is taken as-is (`Premul`).
+pub fn to_skia(pixels: &Pixels) -> sk::Image {
+    let (data, alpha) = match &pixels.data {
+        PixelData::Rgb(rgb) => {
+            let mut rgba = Vec::with_capacity(pixels.width as usize * pixels.height as usize * 4);
             for px in rgb.chunks_exact(3) {
                 rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
             }
             (sk::Data::new_copy(&rgba), sk::AlphaType::Opaque)
         }
-        SourcePixels::Rgba(rgba) => (sk::Data::new_copy(rgba), sk::AlphaType::Unpremul),
-        SourcePixels::RgbaPremultiplied(rgba) => (sk::Data::new_copy(rgba), sk::AlphaType::Premul),
+        PixelData::Rgba(rgba) => (sk::Data::new_copy(rgba), sk::AlphaType::Unpremul),
+        PixelData::RgbaPremultiplied(rgba) => (sk::Data::new_copy(rgba), sk::AlphaType::Premul),
     };
     let info = sk::ImageInfo::new(
-        (source.width as i32, source.height as i32),
+        (pixels.width as i32, pixels.height as i32),
         sk::ColorType::RGBA8888,
         alpha,
         None,
     );
-    sk::images::raster_from_data(&info, data, source.width as usize * 4)
+    sk::images::raster_from_data(&info, data, pixels.width as usize * 4)
         .expect("a Skia image from the decoded pixels")
 }
 
