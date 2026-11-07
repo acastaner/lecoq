@@ -5,11 +5,13 @@
 //! state in `lecoq-core`. `ui()` polls background work, then lays out the panels.
 
 mod copy;
+pub(crate) mod dialog;
+pub(crate) mod job;
 mod save;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use lecoq_codec::{DisplayImage, Size, fit_within};
@@ -21,9 +23,11 @@ use lecoq_siblings::{Decoded, Direction};
 use crate::Command;
 use crate::animation::Animation;
 use crate::app::copy::CopyState;
+use crate::app::dialog::DialogSlot;
+use crate::app::job::Job;
 use crate::app::save::SaveState;
 use crate::config_save::ConfigSaver;
-use crate::decode::PendingDecode;
+use crate::decode::{self, DecodeResult};
 use crate::editor::{DisplayPixels, Editor, ImageOp, MAX_EDIT_PIXELS, PanCursor};
 use crate::pan::PanGesture;
 use crate::paste::{Destination, Incoming, PendingIncoming};
@@ -53,7 +57,7 @@ pub struct Launch {
     pub platform: Platform,
     pub config: Config,
     /// The first-image decode started at `main()` (§1.3), if a path was given.
-    pub(crate) first_image: Option<PendingDecode>,
+    pub(crate) first_image: Option<Decode>,
     /// The display-size cache cap in bytes (§3.3). Tests lower it to watch eviction.
     pub cache_cap: usize,
     /// The Sibling ordering rule (§3.2): the platform's own. Tests pin one so the order doesn't
@@ -94,10 +98,11 @@ impl Launch {
         ready: impl FnOnce() + Send + 'static,
     ) {
         let display_box = startup_display_box(&self.config);
-        self.first_image = Some(PendingDecode::spawn(path, move || {
+        let job = decode::spawn_display(path.clone(), None, move || {
             ready();
             display_box
-        }));
+        });
+        self.first_image = Some(Decode { job, path });
     }
 
     /// §1.3 step 2 / §8.4: should this process exit, a running lecoq having taken `path`? With
@@ -203,11 +208,12 @@ struct Trashed {
     waits_for_scan: bool,
 }
 
-/// A display-size re-decode of the shown Image for a larger canvas (§5.2). The full-resolution
-/// decode is the editor's single one (#57), consumed through [`ShownImage::full`], not an
-/// [`Upgrade`].
-struct Upgrade {
-    pending: PendingDecode,
+/// A display-size decode in flight and the file it is for: the open (and first-image) decode, or a
+/// re-decode of the shown Image for a larger canvas (§5.2). The full-resolution decode is the
+/// editor's single one (#57), consumed through [`ShownImage::full`], not a [`Decode`].
+pub(crate) struct Decode {
+    pub(crate) job: Job<DecodeResult>,
+    pub(crate) path: PathBuf,
 }
 
 /// What waits on the unsaved-changes prompt (#35, §6.4): done right away without unsaved changes,
@@ -266,13 +272,13 @@ pub struct LecoqApp {
     platform: Platform,
     config: Config,
     config_saver: ConfigSaver,
-    pending: Option<PendingDecode>,
+    pending: Option<Decode>,
     /// The file on screen (or that failed to open, when `error` is set).
     path: Option<PathBuf>,
     shown: Option<ShownImage>,
     /// "Can't open <name>: <reason>" (§5.2), shown on the canvas instead of an image.
     error: Option<String>,
-    upgrade: Option<Upgrade>,
+    upgrade: Option<Decode>,
     view: View,
     /// The pan drag in progress (Space+left or middle button).
     pan: PanGesture,
@@ -282,7 +288,7 @@ pub struct LecoqApp {
     canvas: Option<canvas::Layout>,
     first_paint: FirstPaint,
     /// The open dialog while it is up: receives the chosen path, or `None` on Cancel.
-    open_dialog: Option<mpsc::Receiver<Option<PathBuf>>>,
+    open_dialog: Option<DialogSlot>,
     navigation: Navigation,
     /// The transient status-bar message and when it was posted.
     message: Option<(String, Instant)>,
@@ -309,7 +315,7 @@ pub struct LecoqApp {
     /// A pasted or Ctrl+dropped image being read and decoded (§4.6, §6.3).
     incoming: Option<PendingIncoming>,
     /// The Copy to / Move to folder picker while it is up, and which operation it is for (#53).
-    folder_dialog: Option<(FolderOp, mpsc::Receiver<Option<PathBuf>>)>,
+    folder_dialog: Option<(FolderOp, DialogSlot)>,
     /// The last Target folder a Copy to / Move to chose, where the next picker starts (stories 7,
     /// 8). Seeded from and persisted to `config.toml`, so it survives a restart.
     last_target: Option<PathBuf>,
@@ -322,8 +328,10 @@ pub struct LecoqApp {
 
 impl LecoqApp {
     pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> Self {
-        if let Some(pending) = &launch.first_image {
-            pending.wake(&cc.egui_ctx);
+        // The first-image decode was spawned before the window existed (§1.3): give it the UI's
+        // repaint now (it wakes at once if it already landed). Every other job spawns with a waker.
+        if let Some(first) = &launch.first_image {
+            first.job.set_waker(job::waker(&cc.egui_ctx));
         }
         // Ctrl+plus / minus / 0 would scale the whole UI; the image zoom is on plain +, - and 0.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -333,6 +341,7 @@ impl LecoqApp {
             .instance
             .set_wake(Box::new(move || ctx.request_repaint()));
         let mut editor = Editor::with_tool_styles(&launch.config.tools);
+        editor.set_waker(cc.egui_ctx.clone());
         editor.set_history_pixel_cap(launch.history_pixel_cap);
         // §8.3: the highlight tool's magnification is the `magnify_factor` setting.
         editor.set_tool_default(
@@ -588,8 +597,10 @@ impl LecoqApp {
     /// Is background work still pending (a decode, an answer from the open dialog, a config write,
     /// the Sibling scan, prefetch, …)? Tests wait for this to clear.
     pub fn is_busy(&self) -> bool {
-        self.pending.is_some()
-            || self.upgrade.is_some()
+        // A fold over the job slots (each asks its own `Job::is_running`) and the dialogs, plus the
+        // remaining non-slot state (prompts, queued work, the Sibling scan).
+        self.pending.as_ref().is_some_and(|d| d.job.is_running())
+            || self.upgrade.as_ref().is_some_and(|d| d.job.is_running())
             || self.open_dialog.is_some()
             || self.config_saver.is_busy()
             || self
@@ -599,12 +610,16 @@ impl LecoqApp {
             || self.editor.is_busy()
             || self.navigation.is_busy()
             || self.save.dialog.is_some()
-            || self.save.saving.is_some()
+            || self.save.saving.as_ref().is_some_and(|s| s.is_running())
             || self.save.queued.is_some()
-            || self.copy.in_progress.is_some()
+            || self
+                .copy
+                .in_progress
+                .as_ref()
+                .is_some_and(|c| c.is_running())
             || self.copy.queued
             || self.folder_dialog.is_some()
-            || self.incoming.is_some()
+            || self.incoming.as_ref().is_some_and(|i| i.is_running())
             || self.trashed.as_ref().is_some_and(|t| t.waits_for_scan)
             || self.save.after_save.is_some()
     }
@@ -900,25 +915,26 @@ impl LecoqApp {
         if self.open_dialog.is_some() {
             return;
         }
-        let (tx, rx) = mpsc::channel();
-        self.open_dialog = Some(rx);
         let ctx = self.ctx.clone();
         let text = lecoq_platform::OpenDialogText {
             title: strings::OPEN_DIALOG_TITLE.to_owned(),
             images: strings::IMAGES_FILTER.to_owned(),
             all_files: strings::ALL_FILES_FILTER.to_owned(),
         };
-        self.platform.dialogs.pick_image(
-            &text,
-            Box::new(move |chosen| {
-                let _ = tx.send(chosen);
-                ctx.request_repaint();
-            }),
-        );
+        self.open_dialog = Some(DialogSlot::open(&ctx, |reply| {
+            self.platform.dialogs.pick_image(&text, reply);
+        }));
     }
 
     fn poll_open_dialog(&mut self) {
-        if let Some(Some(path)) = dialog_answer(&mut self.open_dialog) {
+        let Some(slot) = &self.open_dialog else {
+            return;
+        };
+        let Some(answer) = slot.answer() else {
+            return;
+        };
+        self.open_dialog = None;
+        if let Some(path) = answer {
             self.execute(Command::Open(path));
         }
     }
@@ -930,7 +946,11 @@ impl LecoqApp {
         self.trashed = None;
         self.message = None;
         // The previous Image stays on screen until the new one is decoded (§3.3).
-        self.pending = Some(PendingDecode::spawn(path.to_owned(), move || display_box));
+        let path = path.to_owned();
+        let job = decode::spawn_display(path.clone(), Some(job::waker(&self.ctx)), move || {
+            display_box
+        });
+        self.pending = Some(Decode { job, path });
     }
 
     /// Move to the next or previous Sibling (§3.1). Callers go through
@@ -1020,8 +1040,8 @@ impl LecoqApp {
             self.platform.clipboard.clone(),
             destination,
             self.display_box(),
+            Some(job::waker(&self.ctx)),
         );
-        incoming.pending.wake(&self.ctx);
         self.incoming = Some(incoming);
     }
 
@@ -1041,17 +1061,20 @@ impl LecoqApp {
         if self.incoming.is_some() || !self.editor.can_edit() || self.editor.in_gesture() {
             return;
         }
-        let incoming = PendingIncoming::file(path, Destination::Inset, self.display_box());
-        incoming.pending.wake(&self.ctx);
+        let incoming = PendingIncoming::file(
+            path,
+            Destination::Inset,
+            self.display_box(),
+            Some(job::waker(&self.ctx)),
+        );
         self.incoming = Some(incoming);
     }
 
     fn poll_incoming(&mut self, ctx: &egui::Context) {
-        let Some(incoming) = &self.incoming else {
+        let Some(incoming) = &mut self.incoming else {
             return;
         };
-        incoming.pending.wake(ctx);
-        let Some(result) = incoming.pending.take() else {
+        let Some(result) = incoming.job.poll() else {
             return;
         };
         let incoming = self.incoming.take().expect("checked above");
@@ -1289,29 +1312,23 @@ impl LecoqApp {
             FolderOp::Copy => strings::COPY_TO_DIALOG_TITLE,
             FolderOp::Move => strings::MOVE_TO_DIALOG_TITLE,
         };
-        let (tx, rx) = mpsc::channel();
-        self.folder_dialog = Some((op, rx));
         let ctx = self.ctx.clone();
-        self.platform.dialogs.pick_folder(
-            title,
-            &start,
-            Box::new(move |chosen| {
-                let _ = tx.send(chosen);
-                ctx.request_repaint();
+        self.folder_dialog = Some((
+            op,
+            DialogSlot::open(&ctx, |reply| {
+                self.platform.dialogs.pick_folder(title, &start, reply);
             }),
-        );
+        ));
     }
 
     /// The folder picker's answer, once it has come: a chosen Target folder starts the operation
     /// (through the unsaved-changes flow); Cancel does nothing at all (story 9).
     fn poll_folder_dialog(&mut self) {
-        let answer = match &self.folder_dialog {
-            Some((_, rx)) => match rx.try_recv() {
-                Ok(chosen) => chosen,
-                Err(mpsc::TryRecvError::Empty) => return,
-                Err(mpsc::TryRecvError::Disconnected) => None,
-            },
-            None => return,
+        let Some((_, slot)) = &self.folder_dialog else {
+            return;
+        };
+        let Some(answer) = slot.answer() else {
+            return;
         };
         let (op, _) = self.folder_dialog.take().expect("checked above");
         let Some(folder) = answer else {
@@ -1436,15 +1453,14 @@ impl LecoqApp {
         if self.trashed.as_ref().is_some_and(|t| t.waits_for_scan) && self.navigation.is_scanned() {
             self.leave_trashed();
         }
-        let Some(pending) = &self.pending else {
+        let Some(pending) = &mut self.pending else {
             return;
         };
-        pending.wake(ctx);
-        let Some(result) = pending.take() else {
+        let Some(result) = pending.job.poll() else {
             return;
         };
-        let path = pending.path().to_owned();
-        self.pending = None;
+        let pending = self.pending.take().expect("checked above");
+        let path = pending.path;
         self.show_decoded(ctx, path.clone(), result.map(Arc::new).map_err(Arc::new));
         if self.first_paint == FirstPaint::Done {
             // A newly opened file: its folder is the new Sibling list.
@@ -1487,11 +1503,10 @@ impl LecoqApp {
     }
 
     fn poll_upgrade(&mut self, ctx: &egui::Context) {
-        let Some(upgrade) = &self.upgrade else {
+        let Some(upgrade) = &mut self.upgrade else {
             return;
         };
-        upgrade.pending.wake(ctx);
-        let Some(result) = upgrade.pending.take() else {
+        let Some(result) = upgrade.job.poll() else {
             return;
         };
         let upgrade = self.upgrade.take().expect("checked above");
@@ -1499,7 +1514,7 @@ impl LecoqApp {
             // A failed re-decode (the file changed or went away) keeps the pixels on screen.
             return;
         };
-        if Some(upgrade.pending.path()) != shown.path.as_deref()
+        if Some(upgrade.path.as_path()) != shown.path.as_deref()
             || image.original_size != shown.original_size
         {
             return;
@@ -1574,9 +1589,8 @@ impl LecoqApp {
         }
         shown.requested = target;
         let path = shown.path.clone().expect("checked by the caller");
-        let pending = PendingDecode::spawn(path, move || max);
-        pending.wake(ctx);
-        self.upgrade = Some(Upgrade { pending });
+        let job = decode::spawn_display(path.clone(), Some(job::waker(ctx)), move || max);
+        self.upgrade = Some(Decode { job, path });
     }
 
     /// Build the full-resolution zoom texture from the editor's single shared decode (#57). Starts
@@ -1904,7 +1918,7 @@ impl eframe::App for LecoqApp {
         self.poll_folder_dialog();
         self.poll_save_dialog();
         self.poll_save(&ctx);
-        self.poll_copy(&ctx);
+        self.poll_copy();
         self.poll_incoming(&ctx);
         self.poll_after_save();
         self.follow_directory(&ctx);
@@ -2015,18 +2029,6 @@ fn file_name(path: &Path) -> String {
         .unwrap_or(path.as_os_str())
         .to_string_lossy()
         .into_owned()
-}
-
-/// The answer of the file dialog waited on in `slot`, once it has come: the path chosen, or
-/// `None` for Cancel (or a dialog that went away). `slot` is emptied then; `None` while it is up.
-fn dialog_answer(slot: &mut Option<mpsc::Receiver<Option<PathBuf>>>) -> Option<Option<PathBuf>> {
-    let chosen = match slot.as_ref()?.try_recv() {
-        Ok(chosen) => chosen,
-        Err(mpsc::TryRecvError::Empty) => return None,
-        Err(mpsc::TryRecvError::Disconnected) => None,
-    };
-    *slot = None;
-    Some(chosen)
 }
 
 /// Do `a` and `b` name the same file? (Save As may spell it differently.)

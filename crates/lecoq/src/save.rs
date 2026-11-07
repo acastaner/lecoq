@@ -12,7 +12,8 @@ use lecoq_codec::{SaveFormat, Size};
 use lecoq_core::{Annotation, AnnotationId, Document, PixelData, Pixels, Point, Rect, Shape};
 use lecoq_render::{Composite, Renderer, Source, View};
 
-use crate::decode::{Pending, decode_full};
+use crate::app::job::{Job, Waker};
+use crate::decode::decode_full;
 use crate::strings;
 
 /// What a save or copy Flattens (§7.2): the Document, plus where its full-resolution pixels come
@@ -76,14 +77,9 @@ impl From<FlattenError> for String {
     }
 }
 
-pub(crate) type PendingSave = Pending<SaveResult>;
-
-impl PendingSave {
-    /// Start `job` on the worker thread. The pending work's path is the target.
-    pub fn spawn_save(job: SaveJob) -> Self {
-        let target = job.target.clone();
-        Self::spawn_job(target, "worker", move |_| run(job))
-    }
+/// Start `job` on the worker thread (§7.3), waking `waker` when it finishes.
+pub(crate) fn spawn_save(job: SaveJob, waker: Option<Waker>) -> Job<SaveResult> {
+    Job::spawn("worker", waker, move || run(job))
 }
 
 fn run(job: SaveJob) -> SaveResult {
@@ -114,13 +110,9 @@ pub(crate) struct CopyJob {
     pub clipboard: Arc<dyn lecoq_platform::Clipboard>,
 }
 
-pub(crate) type PendingCopy = Pending<SaveResult>;
-
-impl PendingCopy {
-    /// Flatten, encode as PNG and put on the clipboard, on the worker thread (§7.3).
-    pub fn spawn_copy(job: CopyJob) -> Self {
-        Self::spawn_job(PathBuf::new(), "worker", move |_| copy(job))
-    }
+/// Flatten, encode as PNG and put on the clipboard, on the worker thread (§7.3), waking `waker`.
+pub(crate) fn spawn_copy(job: CopyJob, waker: Option<Waker>) -> Job<SaveResult> {
+    Job::spawn("worker", waker, move || copy(job))
 }
 
 fn copy(job: CopyJob) -> SaveResult {
@@ -144,11 +136,12 @@ pub(crate) struct AnnotationsCopyJob {
     pub clipboard: Arc<dyn lecoq_platform::Clipboard>,
 }
 
-impl PendingCopy {
-    /// Serialise the Annotations and render their PNG, on the worker thread (§7.3).
-    pub fn spawn_copy_annotations(job: AnnotationsCopyJob) -> Self {
-        Self::spawn_job(PathBuf::new(), "worker", move |_| copy_annotations(job))
-    }
+/// Serialise the Annotations and render their PNG, on the worker thread (§7.3), waking `waker`.
+pub(crate) fn spawn_copy_annotations(
+    job: AnnotationsCopyJob,
+    waker: Option<Waker>,
+) -> Job<SaveResult> {
+    Job::spawn("worker", waker, move || copy_annotations(job))
 }
 
 /// How far drawing reaches beyond an Annotation's bounds (line, arrowheads, shadow), at most;

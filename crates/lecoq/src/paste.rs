@@ -12,7 +12,7 @@ use lecoq_core::{CopiedAnnotation, Pixels};
 use lecoq_platform::Clipboard;
 use lecoq_platform::clipboard::IMAGE_FORMATS;
 
-use crate::decode::Pending;
+use crate::app::job::{Job, Waker};
 
 /// What came in.
 pub(crate) enum Incoming {
@@ -39,21 +39,22 @@ pub(crate) enum Destination {
 
 /// An incoming image in flight. The error is the status-bar reason.
 pub(crate) struct PendingIncoming {
-    pub pending: Pending<Result<Incoming, String>>,
+    pub job: Job<Result<Incoming, String>>,
     pub destination: Destination,
     /// The file Ctrl+dropped; `None` for a paste.
     pub file: Option<PathBuf>,
 }
 
 impl PendingIncoming {
-    /// Read the clipboard and decode the image on it. `display_box`: the size display pixels are
-    /// made for, when it becomes the Image.
+    /// Read the clipboard and decode the image on it, waking `waker` when it lands. `display_box`:
+    /// the size display pixels are made for, when it becomes the Image.
     pub fn paste(
         clipboard: Arc<dyn Clipboard>,
         destination: Destination,
         display_box: Size,
+        waker: Option<Waker>,
     ) -> Self {
-        let pending = Pending::spawn_job(PathBuf::new(), "paste", move |_| {
+        let job = Job::spawn("paste", waker, move || {
             // Annotations only go onto an Image; the empty window takes an image.
             let mut accept = Vec::with_capacity(IMAGE_FORMATS.len() + 1);
             if destination == Destination::Inset {
@@ -76,23 +77,34 @@ impl PendingIncoming {
             }
         });
         Self {
-            pending,
+            job,
             destination,
             file: None,
         }
     }
 
-    /// Decode a Ctrl+dropped file.
-    pub fn file(path: PathBuf, destination: Destination, display_box: Size) -> Self {
-        let pending = Pending::spawn_job(path.clone(), "decode", move |path| {
-            let decoded = lecoq_codec::decode(path).map_err(|e| e.to_string())?;
+    /// Decode a Ctrl+dropped file, waking `waker` when it lands.
+    pub fn file(
+        path: PathBuf,
+        destination: Destination,
+        display_box: Size,
+        waker: Option<Waker>,
+    ) -> Self {
+        let source = path.clone();
+        let job = Job::spawn("decode", waker, move || {
+            let decoded = lecoq_codec::decode(&source).map_err(|e| e.to_string())?;
             Ok(image(decoded, destination, display_box))
         });
         Self {
-            pending,
+            job,
             destination,
             file: Some(path),
         }
+    }
+
+    /// Is the read-and-decode still outstanding?
+    pub(crate) fn is_running(&self) -> bool {
+        self.job.is_running()
     }
 }
 
