@@ -1,7 +1,7 @@
 //! Rectangle (§4.1 R): an axis-aligned box with a line and an optional fill.
 
 use super::Shape;
-use crate::geometry::{Affine, Point, Rect};
+use crate::geometry::{Affine, Point, Rect, Vector};
 use crate::image_op::ImageTransform;
 use crate::style::{PropertyKind, Style};
 
@@ -43,9 +43,9 @@ impl Shape for Rectangle {
         self.rect = t.apply_rect(self.rect);
     }
 
-    fn image_transform(&mut self, t: &ImageTransform) {
+    fn image_transform(&mut self, t: &ImageTransform, size: Vector) {
         // Axis-aligned rects stay axis-aligned through crops, 90° rotations, flips and resizes.
-        self.transform(&t.affine());
+        self.transform(&t.affine(size));
     }
 
     fn properties(&self) -> &'static [PropertyKind] {
