@@ -3,7 +3,7 @@
 
 use lcms2::{CIEXYZ, Flags, Intent, PixelFormat, Profile, Tag, TagSignature, Transform};
 
-use crate::Pixels;
+use lecoq_core::{PixelData, Pixels};
 
 /// Convert `pixels` from the `icc` profile to sRGB, in place. Nothing happens when the profile is
 /// sRGB, isn't an RGB profile (a grey or CMYK profile describes pixels the decoder has already
@@ -19,9 +19,10 @@ pub(crate) fn to_srgb(icc: &[u8], pixels: &mut Pixels) {
     if is_srgb(&profile, &srgb) {
         return;
     }
-    let (format, buffer) = match pixels {
-        Pixels::Rgb(rgb) => (PixelFormat::RGB_8, rgb),
-        Pixels::Rgba(rgba) => (PixelFormat::RGBA_8, rgba),
+    let (format, buffer) = match &mut pixels.data {
+        PixelData::Rgb(rgb) => (PixelFormat::RGB_8, rgb),
+        // Decode pixels are straight; premultiplied pixels never reach colour conversion.
+        PixelData::Rgba(rgba) | PixelData::RgbaPremultiplied(rgba) => (PixelFormat::RGBA_8, rgba),
     };
     let Ok(transform) = Transform::<u8, u8>::new_flags(
         &profile,

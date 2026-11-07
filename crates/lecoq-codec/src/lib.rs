@@ -14,6 +14,7 @@ use std::path::Path;
 use fast_image_resize as fr;
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
+pub use lecoq_core::{PixelData, Pixels};
 
 pub use animation::{Frame, Frames, frames};
 
@@ -61,15 +62,6 @@ pub struct DisplayImage {
     /// The file is a GIF or WebP, so it may be an animation: [`frames`] tells. The pixels are its
     /// first frame.
     pub may_animate: bool,
-}
-
-/// Tightly packed 8-bit sRGB pixels, row-major.
-#[derive(Clone)]
-pub enum Pixels {
-    /// Opaque images (JPEG, and every image without an alpha channel).
-    Rgb(Vec<u8>),
-    /// Images with an alpha channel, not premultiplied.
-    Rgba(Vec<u8>),
 }
 
 impl DisplayImage {
@@ -219,10 +211,15 @@ fn decode_reader<R: std::io::BufRead + std::io::Seek>(
     let icc = decoder.icc_profile().ok().flatten();
     let image = DynamicImage::from_decoder(decoder).map_err(DecodeError::new)?;
     let stored = Size::new(image.width(), image.height());
-    let pixels = if image.color().has_alpha() {
-        Pixels::Rgba(image.into_rgba8().into_raw())
+    let data = if image.color().has_alpha() {
+        PixelData::Rgba(image.into_rgba8().into_raw())
     } else {
-        Pixels::Rgb(image.into_rgb8().into_raw())
+        PixelData::Rgb(image.into_rgb8().into_raw())
+    };
+    let pixels = Pixels {
+        width: stored.width,
+        height: stored.height,
+        data,
     };
     Ok(Decoded {
         pixels,
@@ -277,11 +274,13 @@ fn resize(pixels: Pixels, from: Size, to: Size) -> Pixels {
     if from == to {
         return pixels;
     }
-    let (pixel_type, rebuild): (_, fn(Vec<u8>) -> Pixels) = match pixels {
-        Pixels::Rgb(_) => (fr::PixelType::U8x3, Pixels::Rgb),
-        Pixels::Rgba(_) => (fr::PixelType::U8x4, Pixels::Rgba),
+    let (pixel_type, rebuild): (_, fn(Vec<u8>) -> PixelData) = match pixels.data {
+        PixelData::Rgb(_) => (fr::PixelType::U8x3, PixelData::Rgb),
+        PixelData::Rgba(_) => (fr::PixelType::U8x4, PixelData::Rgba),
+        PixelData::RgbaPremultiplied(_) => (fr::PixelType::U8x4, PixelData::RgbaPremultiplied),
     };
-    let (Pixels::Rgb(buffer) | Pixels::Rgba(buffer)) = pixels;
+    let (PixelData::Rgb(buffer) | PixelData::Rgba(buffer) | PixelData::RgbaPremultiplied(buffer)) =
+        pixels.data;
     let src = fr::images::Image::from_vec_u8(from.width, from.height, buffer, pixel_type)
         .expect("buffer matches its dimensions");
     let mut dst = fr::images::Image::new(to.width, to.height, pixel_type);
@@ -293,25 +292,37 @@ fn resize(pixels: Pixels, from: Size, to: Size) -> Pixels {
                 .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Bilinear)),
         )
         .expect("same pixel type");
-    rebuild(dst.into_vec())
+    Pixels {
+        width: to.width,
+        height: to.height,
+        data: rebuild(dst.into_vec()),
+    }
 }
 
 /// Apply `orientation` to `pixels` of `size` (as stored).
 fn orient(pixels: Pixels, size: Size, orientation: Orientation) -> Pixels {
-    let mut image = match pixels {
-        Pixels::Rgb(rgb) => DynamicImage::ImageRgb8(
+    let mut image = match pixels.data {
+        PixelData::Rgb(rgb) => DynamicImage::ImageRgb8(
             image::RgbImage::from_raw(size.width, size.height, rgb)
                 .expect("buffer matches its dimensions"),
         ),
-        Pixels::Rgba(rgba) => DynamicImage::ImageRgba8(
+        // Decode pixels are straight; premultiplied pixels are never oriented, but keep the type
+        // total by treating them as a four-channel buffer.
+        PixelData::Rgba(rgba) | PixelData::RgbaPremultiplied(rgba) => DynamicImage::ImageRgba8(
             image::RgbaImage::from_raw(size.width, size.height, rgba)
                 .expect("buffer matches its dimensions"),
         ),
     };
     image.apply_orientation(orientation);
-    match image {
-        DynamicImage::ImageRgb8(rgb) => Pixels::Rgb(rgb.into_raw()),
-        DynamicImage::ImageRgba8(rgba) => Pixels::Rgba(rgba.into_raw()),
+    let (width, height) = (image.width(), image.height());
+    let data = match image {
+        DynamicImage::ImageRgb8(rgb) => PixelData::Rgb(rgb.into_raw()),
+        DynamicImage::ImageRgba8(rgba) => PixelData::Rgba(rgba.into_raw()),
         _ => unreachable!("orientation keeps the pixel type"),
+    };
+    Pixels {
+        width,
+        height,
+        data,
     }
 }

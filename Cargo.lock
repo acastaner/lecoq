@@ -1863,6 +1863,7 @@ dependencies = [
  "fast_image_resize",
  "image",
  "lcms2",
+ "lecoq-core",
  "libavif-sys",
  "tempfile",
  "webp",
