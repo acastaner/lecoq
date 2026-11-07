@@ -181,24 +181,26 @@ fn control(ui: &mut egui::Ui, kind: PropertyKind, bar: &PropertyBar<'_>, out: &m
         }
         PropertyKind::Font => {
             let mut chosen = None;
+            let current: &str = &style.font;
             let response = egui::ComboBox::from_id_salt("font")
-                .selected_text(style.font.as_str())
+                .selected_text(current)
                 .width(160.0)
                 .height(400.0)
                 .show_ui(ui, |ui| {
                     for family in bar.fonts {
                         if ui
-                            .selectable_label(*family == style.font, family.as_str())
+                            .selectable_label(family.as_str() == current, family.as_str())
                             .clicked()
                         {
-                            chosen = Some(family.clone());
+                            chosen = Some(family.as_str());
                         }
                     }
                 })
                 .response;
             response.accessible_name(strings::FONT);
-            if let Some(family) = chosen.filter(|f| *f != style.font) {
-                out.changes.push(Property::Font(family));
+            if let Some(family) = chosen.filter(|f| *f != current) {
+                out.changes
+                    .push(Property::Font(std::sync::Arc::from(family)));
             }
         }
         PropertyKind::FontSize => {

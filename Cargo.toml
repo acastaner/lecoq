@@ -18,7 +18,8 @@ lecoq-siblings = { path = "crates/lecoq-siblings" }
 lecoq-platform = { path = "crates/lecoq-platform" }
 
 eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "accesskit"] }
-egui = "0.37"
+# `bytemuck`: lets the editor render the composite straight into a ColorImage's bytes (#55).
+egui = { version = "0.37", features = ["bytemuck"] }
 # egui's bundled fonts: the Step counter digits are drawn from one, so no system font is needed.
 epaint_default_fonts = "0.37"
 egui_kittest = { version = "0.37", features = ["eframe"] }

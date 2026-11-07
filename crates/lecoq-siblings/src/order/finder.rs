@@ -34,13 +34,13 @@ impl NameOrder for FinderOrder {
     }
 
     /// Builds each `NSString` once rather than twice per comparison.
-    fn sorted_indices(&self, names: &[String]) -> Vec<usize> {
+    fn sorted_indices(&self, names: &[&str]) -> Vec<usize> {
         autoreleasepool(|_| {
             let strings: Vec<Retained<NSString>> =
-                names.iter().map(|n| NSString::from_str(n)).collect();
+                names.iter().map(|&n| NSString::from_str(n)).collect();
             let mut indices: Vec<usize> = (0..names.len()).collect();
             indices
-                .sort_by(|&a, &b| Self::compare_ns(&strings[a], &strings[b], &names[a], &names[b]));
+                .sort_by(|&a, &b| Self::compare_ns(&strings[a], &strings[b], names[a], names[b]));
             indices
         })
     }

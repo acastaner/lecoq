@@ -2,7 +2,7 @@
 
 use super::Shape;
 use super::line::distance_to_segment;
-use crate::geometry::{Affine, Point, Rect};
+use crate::geometry::{Affine, Point, Rect, Vector};
 use crate::image_op::ImageTransform;
 use crate::style::{PropertyKind, Style};
 
@@ -84,8 +84,8 @@ impl Shape for Freehand {
         }
     }
 
-    fn image_transform(&mut self, t: &ImageTransform) {
-        self.transform(&t.affine());
+    fn image_transform(&mut self, t: &ImageTransform, size: Vector) {
+        self.transform(&t.affine(size));
     }
 
     fn properties(&self) -> &'static [PropertyKind] {

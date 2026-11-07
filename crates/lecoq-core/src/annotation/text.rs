@@ -59,7 +59,7 @@ const MIN_CHARS: &str = "00000";
 /// The laid-out size and what it was laid out with.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Layout {
-    font: String,
+    font: std::sync::Arc<str>,
     size: f32,
     /// The text's laid-out width and height.
     width: f32,
@@ -97,7 +97,7 @@ impl Text {
             text: text.to_owned(),
             width: None,
             layout: Layout {
-                font: String::new(),
+                font: std::sync::Arc::from(""),
                 size: 0.0,
                 width: 0.0,
                 height: 0.0,
@@ -214,8 +214,8 @@ impl Shape for Text {
     /// corner on the Image (a resize also scales a fixed width here, and the font size through
     /// `Annotation::image_transform`, which then relayouts); rotations and flips centre the box on
     /// its transformed centre.
-    fn image_transform(&mut self, t: &ImageTransform) {
-        let a = t.affine();
+    fn image_transform(&mut self, t: &ImageTransform, size: Vector) {
+        let a = t.affine(size);
         if a.b == 0.0 && a.c == 0.0 && a.a > 0.0 && a.d > 0.0 {
             self.origin = a.apply(self.origin);
             if let Some(w) = self.width {

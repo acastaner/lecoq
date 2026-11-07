@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use egui::{Key, Modifiers};
 use lecoq::Command;
+use lecoq::tools::ToolId;
 use lecoq_core::{AnnotationId, Property, Rgba};
 use lecoq_platform::{Config, MemoryConfigStore, Platform};
 use support::TestApp;
@@ -419,4 +420,48 @@ fn a_multi_selection_moves_one_level_together() {
     assert_eq!(ids(&app), vec![three, one, two]);
     app.key_with(Modifiers::COMMAND, Key::OpenBracket);
     assert_eq!(ids(&app), vec![one, two, three]);
+}
+
+#[test]
+fn changing_one_tool_leaves_the_other_tools_tables_untouched() {
+    // The config already holds a partial `arrow` table (just its thickness). Changing an
+    // unrelated tool (the rectangle) must persist the rectangle only; the arrow table stays the
+    // partial table that was loaded, not re-serialised to every key (#61).
+    let (mut app, store) = app_with_config(Some(
+        "version = 1\n\
+         [tools.arrow]\n\
+         thickness = 7.0\n",
+    ));
+    app.press(Key::R);
+    app.harness.state_mut().execute(Command::SetProperty {
+        property: Property::Thickness(12.0),
+        merge: false,
+    });
+    app.settle();
+
+    let saved = Config::parse(&store.text().expect("config.toml written")).unwrap();
+
+    // The arrow table is untouched: exactly the one key that was loaded.
+    let arrow = saved.tools.get("arrow").expect("tools.arrow kept");
+    assert_eq!(
+        arrow.get("thickness"),
+        Some(&toml::Value::Float(7.0)),
+        "arrow thickness kept"
+    );
+    assert_eq!(
+        arrow.len(),
+        1,
+        "the arrow table must not be re-serialised to every key: {arrow:?}"
+    );
+
+    // The rectangle is written identically to how the whole-config serialise would have: the
+    // editor's current rectangle style, as a full table, with the new thickness.
+    let rectangle = saved
+        .tools
+        .get("rectangle")
+        .expect("tools.rectangle written");
+    let expected =
+        toml::Table::try_from(app.harness.state().tool_style(ToolId::Rectangle)).unwrap();
+    assert_eq!(rectangle, &expected, "rectangle written in full, as before");
+    assert_eq!(rectangle.get("thickness"), Some(&toml::Value::Float(12.0)));
 }

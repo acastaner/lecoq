@@ -10,7 +10,9 @@ use image::DynamicImage;
 use image::metadata::Orientation;
 use libavif_sys as sys;
 
-use crate::{DecodeError, Decoded, Pixels, Size};
+use lecoq_core::{PixelData, Pixels};
+
+use crate::{DecodeError, Decoded, Size};
 
 /// Owns a libavif decoder and image; frees both on drop.
 struct Handles {
@@ -57,7 +59,7 @@ fn check(result: sys::avifResult) -> Result<(), DecodeError> {
 pub(crate) fn decode(data: &[u8]) -> Result<Decoded, DecodeError> {
     // SAFETY: every pointer comes from libavif and is checked for null before use; `Handles` and
     // `RgbBuffer` free them. `data` outlives the call that reads it.
-    let (pixels, size, icc, rotation, mirror) = unsafe {
+    let (data, size, icc, rotation, mirror) = unsafe {
         let handles = Handles {
             decoder: sys::avifDecoderCreate(),
             image: sys::avifImageCreateEmpty(),
@@ -95,10 +97,10 @@ pub(crate) fn decode(data: &[u8]) -> Result<Decoded, DecodeError> {
             let start = rgb.0.pixels.add(y * rgb.0.rowBytes as usize);
             buffer.extend_from_slice(std::slice::from_raw_parts(start, row));
         }
-        let pixels = if alpha {
-            Pixels::Rgba(buffer)
+        let data = if alpha {
+            PixelData::Rgba(buffer)
         } else {
-            Pixels::Rgb(buffer)
+            PixelData::Rgb(buffer)
         };
         let icc = (!image.icc.data.is_null() && image.icc.size > 0)
             .then(|| std::slice::from_raw_parts(image.icc.data, image.icc.size).to_vec());
@@ -106,12 +108,16 @@ pub(crate) fn decode(data: &[u8]) -> Result<Decoded, DecodeError> {
             (image.transformFlags & sys::AVIF_TRANSFORM_IROT != 0).then_some(image.irot.angle % 4);
         let mirror =
             (image.transformFlags & sys::AVIF_TRANSFORM_IMIR != 0).then_some(image.imir.axis);
-        (pixels, size, icc, rotation, mirror)
+        (data, size, icc, rotation, mirror)
     };
 
-    let (pixels, size) = transform(pixels, size, rotation, mirror);
+    let (data, size) = transform(data, size, rotation, mirror);
     Ok(Decoded {
-        pixels,
+        pixels: Pixels {
+            width: size.width,
+            height: size.height,
+            data,
+        },
         stored: size,
         orientation: Orientation::NoTransforms,
         icc,
@@ -122,19 +128,19 @@ pub(crate) fn decode(data: &[u8]) -> Result<Decoded, DecodeError> {
 /// Apply `irot` (anticlockwise quarter turns), then `imir` (axis 0 exchanges top and bottom, 1
 /// left and right), in that order (ISO/IEC 23008-12).
 fn transform(
-    pixels: Pixels,
+    data: PixelData,
     size: Size,
     rotation: Option<u8>,
     mirror: Option<u8>,
-) -> (Pixels, Size) {
+) -> (PixelData, Size) {
     if rotation.unwrap_or(0) == 0 && mirror.is_none() {
-        return (pixels, size);
+        return (data, size);
     }
-    let mut image = match pixels {
-        Pixels::Rgb(rgb) => DynamicImage::ImageRgb8(
+    let mut image = match data {
+        PixelData::Rgb(rgb) => DynamicImage::ImageRgb8(
             image::RgbImage::from_raw(size.width, size.height, rgb).expect("matching buffer"),
         ),
-        Pixels::Rgba(rgba) => DynamicImage::ImageRgba8(
+        PixelData::Rgba(rgba) | PixelData::RgbaPremultiplied(rgba) => DynamicImage::ImageRgba8(
             image::RgbaImage::from_raw(size.width, size.height, rgba).expect("matching buffer"),
         ),
     };
@@ -150,10 +156,10 @@ fn transform(
         _ => image,
     };
     let size = Size::new(image.width(), image.height());
-    let pixels = match image {
-        DynamicImage::ImageRgb8(rgb) => Pixels::Rgb(rgb.into_raw()),
-        DynamicImage::ImageRgba8(rgba) => Pixels::Rgba(rgba.into_raw()),
+    let data = match image {
+        DynamicImage::ImageRgb8(rgb) => PixelData::Rgb(rgb.into_raw()),
+        DynamicImage::ImageRgba8(rgba) => PixelData::Rgba(rgba.into_raw()),
         _ => unreachable!("rotation and mirroring keep the pixel type"),
     };
-    (pixels, size)
+    (data, size)
 }

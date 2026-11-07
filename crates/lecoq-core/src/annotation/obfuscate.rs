@@ -2,7 +2,7 @@
 //! in z-order. The mode and strength are style properties ([`crate::ObfuscateMode`]).
 
 use super::Shape;
-use crate::geometry::{Affine, Point, Rect};
+use crate::geometry::{Affine, Point, Rect, Vector};
 use crate::image_op::ImageTransform;
 use crate::style::{PropertyKind, Style};
 
@@ -35,10 +35,10 @@ impl Shape for Obfuscate {
         self.rect = t.apply_rect(self.rect);
     }
 
-    fn image_transform(&mut self, t: &ImageTransform) {
+    fn image_transform(&mut self, t: &ImageTransform, size: Vector) {
         // A region follows the Image like a rectangle; the strength (Image px) scales with a
         // resize in `Annotation::image_transform`.
-        self.transform(&t.affine());
+        self.transform(&t.affine(size));
     }
 
     fn properties(&self) -> &'static [PropertyKind] {

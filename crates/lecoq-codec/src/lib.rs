@@ -10,10 +10,12 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 use fast_image_resize as fr;
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
+pub use lecoq_core::{PixelData, Pixels};
 
 pub use animation::{Frame, Frames, frames};
 
@@ -50,39 +52,52 @@ impl fmt::Display for Size {
     }
 }
 
-/// An image decoded for display: reduced to fit a box, never above its original size.
+/// An image decoded for display: reduced to fit a box, never above its original size, and left
+/// upload-ready. `pixels` are premultiplied RGBA in egui's exact layout (#56, §7.2), produced on
+/// the decode pool so a cached switch is an `Arc` clone and a GPU upload with no conversion on the
+/// UI thread; they are shared (`Arc`) with the display-size cache, counted once against its cap.
+/// Full-resolution pixels stay straight and never pass through here (that is [`Decoded::into_full`]
+/// and #57).
 #[derive(Clone)]
 pub struct DisplayImage {
     /// The size of the file's pixels, before any reduction, as displayed (after orientation).
     pub original_size: Size,
     /// The size of `pixels`.
     pub size: Size,
-    pub pixels: Pixels,
+    /// Premultiplied, upload-ready pixels, shared with the cache and the shown Image's texture.
+    pub pixels: Arc<Pixels>,
     /// The file is a GIF or WebP, so it may be an animation: [`frames`] tells. The pixels are its
     /// first frame.
     pub may_animate: bool,
 }
 
-/// Tightly packed 8-bit sRGB pixels, row-major.
-#[derive(Clone)]
-pub enum Pixels {
-    /// Opaque images (JPEG, and every image without an alpha channel).
-    Rgb(Vec<u8>),
-    /// Images with an alpha channel, not premultiplied.
-    Rgba(Vec<u8>),
+impl DisplayImage {
+    /// A display-size, upload-ready image reduced from straight full-resolution `pixels` (whose
+    /// stored size is `full_size`) to fit inside `max`, never enlarged, then premultiplied: a
+    /// pasted image's display copy, built from the same decode that feeds the editor's
+    /// full-resolution pixels (§3.5), so the file is decoded once.
+    pub fn reduced_upload_ready(pixels: &Pixels, full_size: Size, max: Size) -> DisplayImage {
+        let target = fit_within(full_size, max);
+        let reduced = resize(pixels.clone(), full_size, target);
+        upload_ready(reduced, full_size, target, false)
+    }
 }
 
-impl DisplayImage {
-    /// The same image reduced to fit inside `max`, never enlarged (a pasted image's display-size
-    /// pixels, §3.5).
-    pub fn reduced(&self, max: Size) -> DisplayImage {
-        let target = fit_within(self.size, max);
-        DisplayImage {
-            original_size: self.original_size,
-            size: target,
-            pixels: resize(self.pixels.clone(), self.size, target),
-            may_animate: self.may_animate,
-        }
+/// Wrap straight, oriented, colour-converted `pixels` (displayed `size`, original `original_size`)
+/// as an upload-ready [`DisplayImage`]: premultiply exactly the way egui does. For RGB this only
+/// appends an opaque alpha (no premultiply arithmetic); for straight RGBA it premultiplies once,
+/// here on the pool thread (#56).
+fn upload_ready(
+    pixels: Pixels,
+    original_size: Size,
+    size: Size,
+    may_animate: bool,
+) -> DisplayImage {
+    DisplayImage {
+        original_size,
+        size,
+        pixels: Arc::new(pixels.premultiplied()),
+        may_animate,
     }
 }
 
@@ -124,8 +139,8 @@ pub struct Decoded {
     stored: Size,
     /// The EXIF orientation (§5.2), applied by [`Decoded::into_display`].
     orientation: Orientation,
-    /// The embedded ICC profile, if any. Converted to sRGB by [`Decoded::into_display`] unless it
-    /// already is sRGB (§5.2).
+    /// The embedded ICC profile, if any. [`Decoded::into_display`] prepares a [`colour::Converter`]
+    /// from it and converts the display pixels to sRGB unless the profile already is sRGB (§5.2).
     icc: Option<Vec<u8>>,
     /// See [`DisplayImage::may_animate`].
     may_animate: bool,
@@ -142,8 +157,42 @@ impl Decoded {
     }
 
     /// Reduce to fit inside `max` (physical pixels), keeping the aspect ratio, never enlarging;
-    /// then apply the orientation and convert to sRGB.
+    /// then apply the orientation, convert to sRGB, and leave the pixels upload-ready
+    /// (premultiplied, #56). The colour converter is prepared from this decode's profile, once,
+    /// here.
     pub fn into_display(self, max: Size) -> DisplayImage {
+        let converter = colour::Converter::prepare(self.icc.as_deref());
+        self.into_display_with(max, &converter)
+    }
+
+    /// As [`Decoded::into_display`], but with a colour `converter` prepared elsewhere and reused:
+    /// an animation prepares one for the whole file and passes it for every frame, so the profile
+    /// is parsed once, not once per frame (#60). This decode's own `icc` is not consulted.
+    pub(crate) fn into_display_with(
+        self,
+        max: Size,
+        converter: &colour::Converter,
+    ) -> DisplayImage {
+        let may_animate = self.may_animate;
+        let (pixels, original_size, size) = self.oriented(max, converter);
+        // Premultiply here, on the decode pool, so the UI thread never converts on a switch (#56).
+        upload_ready(pixels, original_size, size, may_animate)
+    }
+
+    /// The full-resolution pixels, oriented and colour-converted but left straight (not reduced,
+    /// not premultiplied): what the editor and the save encoders work from (§5.3, §7.2). The
+    /// colour converter is prepared from this decode's profile, once, here.
+    pub fn into_full(self) -> Pixels {
+        let converter = colour::Converter::prepare(self.icc.as_deref());
+        let max = self.size();
+        let (pixels, _, _) = self.oriented(max, &converter);
+        pixels
+    }
+
+    /// Reduce to fit inside `max`, then orient and convert to sRGB, leaving straight pixels. The
+    /// shared core of the display path (which then premultiplies) and the full-resolution path
+    /// (which does not). Returns the straight pixels with their original and reduced sizes.
+    fn oriented(self, max: Size, converter: &colour::Converter) -> (Pixels, Size, Size) {
         let original_size = self.size();
         let target = fit_within(original_size, max);
         let stored_target = if swaps_axes(self.orientation) {
@@ -155,15 +204,8 @@ impl Decoded {
         if self.orientation != Orientation::NoTransforms {
             pixels = orient(pixels, stored_target, self.orientation);
         }
-        if let Some(icc) = &self.icc {
-            colour::to_srgb(icc, &mut pixels);
-        }
-        DisplayImage {
-            original_size,
-            size: target,
-            pixels,
-            may_animate: self.may_animate,
-        }
+        converter.convert(&mut pixels);
+        (pixels, original_size, target)
     }
 }
 
@@ -219,10 +261,15 @@ fn decode_reader<R: std::io::BufRead + std::io::Seek>(
     let icc = decoder.icc_profile().ok().flatten();
     let image = DynamicImage::from_decoder(decoder).map_err(DecodeError::new)?;
     let stored = Size::new(image.width(), image.height());
-    let pixels = if image.color().has_alpha() {
-        Pixels::Rgba(image.into_rgba8().into_raw())
+    let data = if image.color().has_alpha() {
+        PixelData::Rgba(image.into_rgba8().into_raw())
     } else {
-        Pixels::Rgb(image.into_rgb8().into_raw())
+        PixelData::Rgb(image.into_rgb8().into_raw())
+    };
+    let pixels = Pixels {
+        width: stored.width,
+        height: stored.height,
+        data,
     };
     Ok(Decoded {
         pixels,
@@ -246,6 +293,14 @@ fn decode_avif(_data: &[u8]) -> Result<Decoded, DecodeError> {
 /// Decode a file for display inside `max` physical pixels (§5.2).
 pub fn decode_for_display(path: &Path, max: Size) -> Result<DisplayImage, DecodeError> {
     Ok(decode(path)?.into_display(max))
+}
+
+/// Reduce `pixels` to fit within `max`, keeping the aspect ratio and never enlarging: the zoom
+/// texture built from the shared full-resolution decode, capped at the GPU's largest texture
+/// (#57). A no-op clone when the pixels already fit.
+pub fn reduced_to_fit(pixels: &Pixels, max: Size) -> Pixels {
+    let from = Size::new(pixels.width, pixels.height);
+    resize(pixels.clone(), from, fit_within(from, max))
 }
 
 /// The largest size with `size`'s aspect ratio that fits in `max`, never above `size` itself.
@@ -277,11 +332,13 @@ fn resize(pixels: Pixels, from: Size, to: Size) -> Pixels {
     if from == to {
         return pixels;
     }
-    let (pixel_type, rebuild): (_, fn(Vec<u8>) -> Pixels) = match pixels {
-        Pixels::Rgb(_) => (fr::PixelType::U8x3, Pixels::Rgb),
-        Pixels::Rgba(_) => (fr::PixelType::U8x4, Pixels::Rgba),
+    let (pixel_type, rebuild): (_, fn(Vec<u8>) -> PixelData) = match pixels.data {
+        PixelData::Rgb(_) => (fr::PixelType::U8x3, PixelData::Rgb),
+        PixelData::Rgba(_) => (fr::PixelType::U8x4, PixelData::Rgba),
+        PixelData::RgbaPremultiplied(_) => (fr::PixelType::U8x4, PixelData::RgbaPremultiplied),
     };
-    let (Pixels::Rgb(buffer) | Pixels::Rgba(buffer)) = pixels;
+    let (PixelData::Rgb(buffer) | PixelData::Rgba(buffer) | PixelData::RgbaPremultiplied(buffer)) =
+        pixels.data;
     let src = fr::images::Image::from_vec_u8(from.width, from.height, buffer, pixel_type)
         .expect("buffer matches its dimensions");
     let mut dst = fr::images::Image::new(to.width, to.height, pixel_type);
@@ -293,25 +350,37 @@ fn resize(pixels: Pixels, from: Size, to: Size) -> Pixels {
                 .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Bilinear)),
         )
         .expect("same pixel type");
-    rebuild(dst.into_vec())
+    Pixels {
+        width: to.width,
+        height: to.height,
+        data: rebuild(dst.into_vec()),
+    }
 }
 
 /// Apply `orientation` to `pixels` of `size` (as stored).
 fn orient(pixels: Pixels, size: Size, orientation: Orientation) -> Pixels {
-    let mut image = match pixels {
-        Pixels::Rgb(rgb) => DynamicImage::ImageRgb8(
+    let mut image = match pixels.data {
+        PixelData::Rgb(rgb) => DynamicImage::ImageRgb8(
             image::RgbImage::from_raw(size.width, size.height, rgb)
                 .expect("buffer matches its dimensions"),
         ),
-        Pixels::Rgba(rgba) => DynamicImage::ImageRgba8(
+        // Decode pixels are straight; premultiplied pixels are never oriented, but keep the type
+        // total by treating them as a four-channel buffer.
+        PixelData::Rgba(rgba) | PixelData::RgbaPremultiplied(rgba) => DynamicImage::ImageRgba8(
             image::RgbaImage::from_raw(size.width, size.height, rgba)
                 .expect("buffer matches its dimensions"),
         ),
     };
     image.apply_orientation(orientation);
-    match image {
-        DynamicImage::ImageRgb8(rgb) => Pixels::Rgb(rgb.into_raw()),
-        DynamicImage::ImageRgba8(rgba) => Pixels::Rgba(rgba.into_raw()),
+    let (width, height) = (image.width(), image.height());
+    let data = match image {
+        DynamicImage::ImageRgb8(rgb) => PixelData::Rgb(rgb.into_raw()),
+        DynamicImage::ImageRgba8(rgba) => PixelData::Rgba(rgba.into_raw()),
         _ => unreachable!("orientation keeps the pixel type"),
+    };
+    Pixels {
+        width,
+        height,
+        data,
     }
 }

@@ -5,19 +5,21 @@
 //! what clears the History when moving to another Image (§4.8). The active tool and each tool's
 //! style outlive it.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use egui::CursorIcon;
 use lecoq_codec::Size;
 use lecoq_core::{
-    AnnotationId, CopiedAnnotation, Document, HISTORY_PIXEL_CAP, Handle, Inset, PixelData, Pixels,
-    Point, Property, PropertyKind, Rect, Restack, Shape, Style, Vector,
+    AnnotationId, CopiedAnnotation, Document, HISTORY_PIXEL_CAP, Handle, Inset, Pixels, Point,
+    Property, PropertyKind, Rect, Restack, Shape, Style, Vector,
 };
-use lecoq_render::{Composite, Renderer, Source, SourcePixels, View};
+use lecoq_render::{Composite, Renderer, Source, View};
 
-use crate::decode::PendingFullDecode;
+use crate::app::job::{self, Job};
+use crate::decode::{self, FullDecodeResult};
 use crate::tools::select::End;
 use crate::tools::text::{TextSession, text_at};
 use crate::tools::{Pointer, Tool, ToolContext, ToolId, select};
@@ -49,7 +51,8 @@ pub const DUPLICATE_OFFSET: f32 = 10.0;
 pub struct DisplayPixels<'a> {
     /// Unique per decode: the renderer's cache key.
     pub key: u64,
-    pub image: &'a egui::ColorImage,
+    /// The display-size pixels, premultiplied and upload-ready (#64, §7.2).
+    pub pixels: &'a Pixels,
 }
 
 /// The editor's state for the open Image.
@@ -58,20 +61,28 @@ struct Edited {
     /// The file the Image came from; `None` for a clipboard image not saved yet (§3.5).
     path: Option<PathBuf>,
     view_only: bool,
-    full_decode: Option<PendingFullDecode>,
+    full_decode: Option<Job<FullDecodeResult>>,
     /// Which open this is: a save finishing after another Image was opened leaves it alone.
     generation: u64,
     /// Image operations chosen before the full-resolution pixels arrived: done when they do.
     queued: Vec<ImageOp>,
     /// The last composite, its texture, and what it was rendered for.
     composite: Option<CompositeTexture>,
+    /// How many times the composite has actually been (re)rendered for this Image: the full path
+    /// and the dirty-region fast path each bump it; the reuse path (pan and zoom below the display
+    /// density, #58) does not. A test seam for ADR 0011, off the render path.
+    renders: u64,
 }
 
 struct CompositeTexture {
     key: (u64, u64, View),
     texture: egui::TextureHandle,
     dest: egui::Rect,
-    pixels: Composite,
+    /// The view-sized RGBA-premultiplied buffer the composite is rendered straight into, shared
+    /// with `texture`: uploading clones this `Arc`, so no copy happens between render and upload
+    /// (#55). `image.as_raw_mut()` is the byte buffer the renderer and the fast path write into,
+    /// and it is kept between frames so a same-size view reuses the allocation.
+    image: Arc<egui::ColorImage>,
     /// Each Annotation's drawn bounds (Image pixels) as of this composite, in z-order: the
     /// dirty-region fast path diffs them against the next frame's to find what changed (#46).
     bounds: Vec<(AnnotationId, Rect)>,
@@ -114,6 +125,9 @@ pub struct Editor {
     rubber_band: Option<egui::Rect>,
     /// How many Images have been opened (each one's [`Edited::generation`]).
     opened: u64,
+    /// The UI context whose repaint the full-resolution decode wakes when it lands; set by the app
+    /// once the window exists. `None` in editor-only tests, which step frames and poll directly.
+    waker: Option<egui::Context>,
 }
 
 /// What a save (#34) needs from the editor when it starts.
@@ -136,12 +150,21 @@ pub struct SaveStamp {
 /// The font families for the property bar's font control.
 enum Fonts {
     NotListed,
-    Listing(mpsc::Receiver<Vec<String>>),
+    Listing(Job<Vec<String>>),
     Listed(Vec<String>),
 }
 
 /// How far from a text box a press still counts as inside it, in points.
 const TEXT_SLOP: f32 = 2.0;
+
+/// How far past the display density the zoom may sit before the exact full-resolution path takes
+/// over from the resampled whole-Image composite (#58, ADR 0011). A small margin at the boundary,
+/// in the spirit of the sub-pixel slop in `is_pannable`, so float rounding in `wanted_density`
+/// against `display_density` can't flap between the two paths frame to frame — which would
+/// re-render on alternating frames, the very cost this avoids. The cost is a sliver of zoom just
+/// above the display density that is resampled when it could have been exact, below what the eye
+/// resolves.
+const DENSITY_MARGIN: f32 = 0.01;
 
 impl Default for Editor {
     fn default() -> Self {
@@ -168,7 +191,14 @@ impl Editor {
             crop: None,
             history_pixel_cap: HISTORY_PIXEL_CAP,
             rubber_band: None,
+            waker: None,
         }
+    }
+
+    /// Give the editor the UI context the full-resolution decode wakes when it finishes. The app
+    /// sets it once the window exists, so the decode needs no per-frame waker re-registration.
+    pub fn set_waker(&mut self, ctx: egui::Context) {
+        self.waker = Some(ctx);
     }
 
     /// Change the History's pixel cap for the Documents opened from now on (tests lower it).
@@ -221,6 +251,7 @@ impl Editor {
             generation: self.opened,
             queued: Vec::new(),
             composite: None,
+            renders: 0,
         });
         if view_only {
             self.set_tool(ToolId::Select);
@@ -257,14 +288,17 @@ impl Editor {
         }
     }
 
-    /// §7.2: the fonts are enumerated the first time the text tool is used, in the background.
+    /// §7.2: the fonts are enumerated the first time the text tool is used, in the background. The
+    /// worker wakes the UI through the [`Job`] waker when the listing lands (#67), like every other
+    /// background worker; the property bar needs no timer poll.
     fn list_fonts(&mut self) {
         if matches!(self.fonts, Fonts::NotListed) {
-            let (tx, rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(lecoq_render::text::families());
-            });
-            self.fonts = Fonts::Listing(rx);
+            let waker = self.waker.as_ref().map(job::waker);
+            self.fonts = Fonts::Listing(Job::spawn(
+                "list-fonts",
+                waker,
+                lecoq_render::text::families,
+            ));
         }
     }
 
@@ -300,9 +334,24 @@ impl Editor {
         self.rubber_band
     }
 
-    pub fn composite(&self) -> Option<&Composite> {
-        let edited = self.edited.as_ref()?;
-        edited.composite.as_ref().map(|c| &c.pixels)
+    /// The last Skia composite of the canvas, as an owned [`Composite`] (§7.2). The pixels live in
+    /// the texture's shared `ColorImage` now (#55); this reads them back for tests and inspection,
+    /// so it is off the render path.
+    pub fn composite(&self) -> Option<Composite> {
+        let c = self.edited.as_ref()?.composite.as_ref()?;
+        Some(Composite {
+            width: c.image.size[0] as u32,
+            height: c.image.size[1] as u32,
+            rgba_premultiplied: c.image.as_raw().to_vec(),
+        })
+    }
+
+    /// How many times the composite has actually been (re)rendered for the open Image. Pan and
+    /// zoom below the display density reuse the whole-Image texture and do not bump it (#58, ADR
+    /// 0011); a revision change or a crossing of the display density does. A test seam, off the
+    /// render path.
+    pub fn composite_renders(&self) -> u64 {
+        self.edited.as_ref().map_or(0, |e| e.renders)
     }
 
     /// The style the property bar shows when nothing is selected: the active tool's.
@@ -554,13 +603,13 @@ impl Editor {
 
     /// Restyle the selection, and make the change the default of the tools that create the
     /// selected Annotations (§4.3). With nothing selected, it is the active tool's default.
-    pub fn set_property(&mut self, property: Property, merge: bool) {
+    pub fn set_property(&mut self, property: Property, merge: bool) -> Vec<ToolId> {
         // While editing text, the box being edited is restyled within the session's step, and the
         // change becomes the text tool's default (§4.3).
         if let (Some(session), Some(e)) = (&self.text, &mut self.edited) {
             session.restyle(&mut e.doc, property.clone());
             self.styles.entry(ToolId::Text).or_default().set(property);
-            return;
+            return vec![ToolId::Text];
         }
         let mut tools = vec![self.tool];
         if let Some(e) = self.edited.as_mut().filter(|e| !e.doc.in_gesture())
@@ -573,26 +622,28 @@ impl Editor {
                 .collect();
         }
         let kind = property.kind();
+        let mut changed = Vec::new();
         for tool in tools {
             if tool.properties().contains(&kind) {
                 self.styles
                     .entry(tool)
                     .or_insert_with(|| tool.default_style())
                     .set(property.clone());
+                if !changed.contains(&tool) {
+                    changed.push(tool);
+                }
             }
         }
+        changed
     }
 
-    /// The tools' styles as `tools.<tool>` tables for `config.toml` (§8.3): the ones changed (or
-    /// read from the config) this run.
-    pub fn tool_styles_config(&self) -> BTreeMap<String, toml::Table> {
-        self.styles
-            .iter()
-            .filter_map(|(tool, style)| {
-                let table = toml::Table::try_from(style).ok()?;
-                Some((tool.config_key().to_owned(), table))
-            })
-            .collect()
+    /// One tool's style as its `tools.<tool>` table for `config.toml` (§8.3): the property command
+    /// persists only the tools a change applied to, rather than every tool's style on every tick
+    /// (#61). `None` for a tool with no style set this run (or read from the config), or one that
+    /// doesn't serialise.
+    pub fn tool_style_config(&self, tool: ToolId) -> Option<(String, toml::Table)> {
+        let table = toml::Table::try_from(self.styles.get(&tool)?).ok()?;
+        Some((tool.config_key().to_owned(), table))
     }
 
     /// Set a tool's default for its next Annotations, whatever is selected (settings seed them).
@@ -613,8 +664,16 @@ impl Editor {
         self.edited.as_mut().filter(|e| !e.doc.in_gesture())
     }
 
+    /// The zoom upgrade needs the full-resolution pixels (#57): run the one shared decode if it
+    /// isn't running or landed already. The same decode as the first tool use, so whichever asks
+    /// first runs it and the other adopts its pixels through [`Document::full_resolution`].
+    pub fn request_full_decode(&mut self) {
+        self.start_full_decode();
+    }
+
     /// §4.7: the first tool use starts the full-resolution decode, in the background.
     fn start_full_decode(&mut self) {
+        let waker = self.waker.as_ref().map(job::waker);
         let Some(e) = &mut self.edited else {
             return;
         };
@@ -622,60 +681,76 @@ impl Editor {
             return;
         }
         if let Some(path) = &e.path {
-            e.full_decode = Some(PendingFullDecode::spawn_full(path.clone()));
+            e.full_decode = Some(decode::spawn_full(path.clone(), waker));
         }
     }
 
-    /// Collect background results.
-    pub fn poll(&mut self, ctx: &egui::Context) {
-        if let Fonts::Listing(rx) = &self.fonts {
-            match rx.try_recv() {
-                Ok(names) => self.fonts = Fonts::Listed(names),
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(30))
-                }
-                Err(mpsc::TryRecvError::Disconnected) => self.fonts = Fonts::Listed(Vec::new()),
-            }
+    /// Collect background results. The font listing and the full-resolution decode each wake the
+    /// UI through their [`Job`] waker when they land (#67), so this only takes the result once it is
+    /// here; no timer poll.
+    pub fn poll(&mut self) {
+        if let Fonts::Listing(job) = &mut self.fonts
+            && let Some(names) = job.poll()
+        {
+            self.fonts = Fonts::Listed(names);
         }
         let Some(e) = &mut self.edited else {
             return;
         };
-        let Some(pending) = &e.full_decode else {
+        let Some(pending) = &mut e.full_decode else {
             return;
         };
-        pending.wake(ctx);
-        if let Some(result) = pending.take() {
-            e.full_decode = None;
-            // A failed full decode leaves editing on the display pixels; Flatten (#34) reports it.
-            if let Ok(pixels) = result {
-                e.doc.set_full_resolution(Arc::new(pixels));
-            }
-            for op in std::mem::take(&mut e.queued) {
-                op.apply(&mut e.doc);
-            }
+        let Some(result) = pending.poll() else {
+            return;
+        };
+        e.full_decode = None;
+        // A failed full decode leaves editing on the display pixels; Flatten (#34) reports it.
+        if let Ok(pixels) = result {
+            e.doc.set_full_resolution(Arc::new(pixels));
+        }
+        for op in std::mem::take(&mut e.queued) {
+            op.apply(&mut e.doc);
         }
     }
 
     // ---- Property bar ----
 
     /// What the property bar edits: the selection's style and properties, or the active tool's.
-    pub fn property_target(&self) -> (Style, Vec<PropertyKind>, bool) {
-        if let Some(doc) = self.document() {
-            let mut selected = doc.selected();
-            if let Some(first) = selected.next() {
-                let mut kinds = first.shape.properties().to_vec();
-                for other in selected {
-                    let theirs = other.shape.properties();
-                    kinds.retain(|k| theirs.contains(k));
+    ///
+    /// The style and the property list are borrowed, not cloned, every frame (#66): a single
+    /// selection and the active tool hand back their own `Style` and `&'static` property list; only
+    /// a multi-selection, whose property list is the intersection of its members', owns a `Vec`.
+    pub fn property_target(&self) -> (Cow<'_, Style>, Cow<'static, [PropertyKind]>, bool) {
+        if let Some(doc) = self.document()
+            && let Some(first) = doc.selected().next()
+        {
+            let first_props = first.shape.properties();
+            // Only a multi-selection needs an owned, intersected list; one Annotation borrows.
+            let kinds = match doc.selected().nth(1) {
+                None => Cow::Borrowed(first_props),
+                Some(_) => {
+                    let mut kinds = first_props.to_vec();
+                    for other in doc.selected().skip(1) {
+                        let theirs = other.shape.properties();
+                        kinds.retain(|k| theirs.contains(k));
+                    }
+                    Cow::Owned(kinds)
                 }
-                return (first.style.clone(), kinds, true);
-            }
+            };
+            return (Cow::Borrowed(&first.style), kinds, true);
         }
-        (
-            self.tool_style(self.tool),
-            self.tool.properties().to_vec(),
-            false,
-        )
+        match self.styles.get(&self.tool) {
+            Some(style) => (
+                Cow::Borrowed(style),
+                Cow::Borrowed(self.tool.properties()),
+                false,
+            ),
+            None => (
+                Cow::Owned(self.tool.default_style()),
+                Cow::Borrowed(self.tool.properties()),
+                false,
+            ),
+        }
     }
 
     /// Turn a property-bar change into a command, merging the changes of one widget interaction.
@@ -1049,14 +1124,16 @@ impl Editor {
         if !ctx.memory(|m| m.has_focus(id)) {
             return Vec::new();
         }
-        let events = ctx.input(|i| i.events.clone());
-        if session.input(&mut e.doc, &events) {
+        // Feed the events straight from the input lock, without cloning the whole list per frame.
+        let (finish, had_events) =
+            ctx.input(|i| (session.input(&mut e.doc, &i.events), !i.events.is_empty()));
+        if finish {
             self.finish_text();
             ctx.memory_mut(|m| m.surrender_focus(id));
             ctx.request_repaint();
             return Vec::new();
         }
-        if !events.is_empty() {
+        if had_events {
             ctx.request_repaint();
         }
         let Some(annotation) = e.doc.annotation(session.id()) else {
@@ -1126,43 +1203,73 @@ impl Editor {
             e.composite = None;
             return None;
         }
-        let (dest, region, px) = layout.visible()?;
-        let view = View {
-            region,
-            width: px.width,
-            height: px.height,
-        };
-        // Zoomed in past the display-size decode, draw from the full-resolution pixels (§7.2).
-        let display_density = display.image.width() as f32 / e.doc.width() as f32;
+        let (shown, region, px) = layout.visible()?;
+
+        // The source, the view and where the texture is drawn (§7.2, ADR 0011). Up to the display
+        // density the composite is drawn from the display-size pixels over the WHOLE Image at the
+        // display texture's resolution, and the canvas draws the visible sub-rectangle of it as it
+        // draws the plain Image texture. That view is independent of pan and zoom, so the cache key
+        // is stable and pan/zoom below the display density reuse the texture — only `dest` moves.
+        // A small margin at the boundary (#58) keeps float rounding from flapping between this
+        // resampled path and the exact one. Zoomed past the display density, the full-resolution
+        // pixels drive the current visible-region composite, re-rendered as the view changes; after
+        // an Image operation whose full-resolution pixels haven't arrived yet, the display pixels
+        // draw the visible region as before, until the decode lands.
+        let display_density = display.pixels.width as f32 / e.doc.width() as f32;
         let wanted_density = px.width as f32 / region.width().max(1.0);
-        let source = match e.doc.full_resolution() {
-            Some(full) if wanted_density > display_density || !e.doc.is_original_image() => {
-                Source {
-                    key: source_key(display.key, e.doc.image_generation()),
-                    width: full.width,
-                    height: full.height,
-                    pixels: match &full.data {
-                        PixelData::Rgb(rgb) => SourcePixels::Rgb(rgb),
-                        PixelData::Rgba(rgba) => SourcePixels::Rgba(rgba),
-                    },
-                }
-            }
-            _ => Source {
+        let use_full = e.doc.full_resolution().is_some()
+            && (wanted_density > display_density * (1.0 + DENSITY_MARGIN)
+                || !e.doc.is_original_image());
+        let (source, view, dest) = if use_full {
+            let source = Source {
+                key: source_key(display.key, e.doc.image_generation()),
+                pixels: e
+                    .doc
+                    .full_resolution()
+                    .expect("use_full implies full_resolution")
+                    .as_ref(),
+            };
+            let view = View {
+                region,
+                width: px.width,
+                height: px.height,
+            };
+            (source, view, shown)
+        } else if e.doc.is_original_image() {
+            let source = Source {
                 key: display.key * 2,
-                width: display.image.width() as u32,
-                height: display.image.height() as u32,
-                pixels: SourcePixels::RgbaPremultiplied(display.image.as_raw()),
-            },
+                pixels: display.pixels,
+            };
+            let view = View {
+                region: e.doc.bounds(),
+                width: display.pixels.width,
+                height: display.pixels.height,
+            };
+            (source, view, layout.image.unwrap_or(shown))
+        } else {
+            let source = Source {
+                key: display.key * 2,
+                pixels: display.pixels,
+            };
+            let view = View {
+                region,
+                width: px.width,
+                height: px.height,
+            };
+            (source, view, shown)
         };
         let revision = e.doc.revision();
         let key = (revision, source.key, view);
         let in_gesture = e.doc.in_gesture();
 
-        // Already up to date? A gesture that ended with a frozen effect region still needs one full
-        // re-render to correct it (the revision didn't change on commit), so don't short-circuit then.
-        if let Some(c) = &e.composite {
+        // Already up to date? A pan or zoom below the display density keeps the key and only moves
+        // `dest` (#58), so refresh `dest` and reuse the texture. A gesture that ended with a frozen
+        // effect region still needs one full re-render to correct it (the revision didn't change on
+        // commit), so don't short-circuit then.
+        if let Some(c) = &mut e.composite {
             let correct_frozen = c.froze && !in_gesture;
             if c.key == key && !correct_frozen {
+                c.dest = dest;
                 return Some((c.texture.id(), c.dest));
             }
         }
@@ -1200,6 +1307,7 @@ impl Editor {
                 return Some((c.texture.id(), c.dest));
             };
             let sub_view = subview(view, sub);
+            e.renders += 1;
             let mut sub_px = renderer.composite(&e.doc, &source, sub_view);
             // Opaque neighbourhood effects that only partly overlap the change can't be recomputed
             // from a slice, so freeze them: restore their pixels from the previous composite for
@@ -1214,18 +1322,23 @@ impl Editor {
                 .filter(|eb| overlaps_partially(eb, &dirty_image))
                 .collect();
             let c = e.composite.as_mut().expect("fast path has a composite");
+            // The freeze-restore and the write-back both work on the shared buffer's bytes
+            // (#55). `make_mut` is free here: the texture manager consumed last frame's delta, so
+            // the `Arc` is unique.
+            let image = Arc::make_mut(&mut c.image);
+            let full_width = image.size[0];
             for eb in &frozen {
-                restore_region(&mut sub_px, &c.pixels, *eb, view, sub);
+                restore_region(&mut sub_px, image.as_raw(), full_width, *eb, view, sub);
             }
             // Write the sub-rect back into the cached pixels so the cache stays consistent, and
             // upload only that sub-rect to the texture.
-            blit(&mut c.pixels, &sub_px, sub);
-            let image = egui::ColorImage::from_rgba_premultiplied(
+            blit(image.as_raw_mut(), full_width, &sub_px, sub);
+            let sub_image = egui::ColorImage::from_rgba_premultiplied(
                 [sub_px.width as usize, sub_px.height as usize],
                 &sub_px.rgba_premultiplied,
             );
             c.texture
-                .set_partial([sub.x0, sub.y0], image, egui::TextureOptions::LINEAR);
+                .set_partial([sub.x0, sub.y0], sub_image, egui::TextureOptions::LINEAR);
             c.key = key;
             c.dest = dest;
             c.bounds = new_bounds;
@@ -1233,28 +1346,41 @@ impl Editor {
             return Some((c.texture.id(), c.dest));
         }
 
-        // Full path: render the whole visible region and reset the gesture's dirty-tracking state.
-        let pixels = renderer.composite(&e.doc, &source, view);
-        let image = egui::ColorImage::from_rgba_premultiplied(
-            [pixels.width as usize, pixels.height as usize],
-            &pixels.rgba_premultiplied,
-        );
+        // Full path: render the whole visible region straight into the texture's buffer (#55) and
+        // reset the gesture's dirty-tracking state. The buffer is kept between frames; a view of the
+        // same size reuses the allocation, a changed size reallocates. A fresh allocation is
+        // transparent, so the renderer skips the clear; a reused one is cleared first.
+        let size = [view.width.max(1) as usize, view.height.max(1) as usize];
+        e.renders += 1;
         match &mut e.composite {
             Some(c) => {
-                c.texture.set(image, egui::TextureOptions::LINEAR);
+                let reallocated = c.image.size != size;
+                if reallocated {
+                    c.image = Arc::new(egui::ColorImage::filled(size, egui::Color32::TRANSPARENT));
+                }
+                let image = Arc::make_mut(&mut c.image);
+                renderer.composite_into(&e.doc, &source, view, image.as_raw_mut(), reallocated);
+                c.texture
+                    .set(Arc::clone(&c.image), egui::TextureOptions::LINEAR);
                 c.key = key;
                 c.dest = dest;
-                c.pixels = pixels;
                 c.bounds = new_bounds;
                 c.froze = false;
             }
             None => {
-                let texture = ctx.load_texture("composite", image, egui::TextureOptions::LINEAR);
+                let mut image = egui::ColorImage::filled(size, egui::Color32::TRANSPARENT);
+                renderer.composite_into(&e.doc, &source, view, image.as_raw_mut(), true);
+                let image = Arc::new(image);
+                let texture = ctx.load_texture(
+                    "composite",
+                    Arc::clone(&image),
+                    egui::TextureOptions::LINEAR,
+                );
                 e.composite = Some(CompositeTexture {
                     key,
                     texture,
                     dest,
-                    pixels,
+                    image,
                     bounds: new_bounds,
                     froze: false,
                 });
@@ -1353,25 +1479,26 @@ fn view_scale(view: View) -> (f32, f32) {
     )
 }
 
-/// Copy `src` (sized to `at`) into `dst` at `at`'s top-left corner. Both are RGBA, row-major.
-fn blit(dst: &mut Composite, src: &Composite, at: SubRect) {
-    let dw = dst.width as usize;
+/// Copy `src` (sized to `at`) into `dst` at `at`'s top-left corner. `dst` is the full composite's
+/// RGBA bytes, `dst_width` pixels wide; both are RGBA, row-major (#55: `dst` is the shared buffer).
+fn blit(dst: &mut [u8], dst_width: usize, src: &Composite, at: SubRect) {
     let sw = src.width as usize;
     let len = sw * 4;
     for j in 0..(at.y1 - at.y0) {
-        let drow = ((at.y0 + j) * dw + at.x0) * 4;
+        let drow = ((at.y0 + j) * dst_width + at.x0) * 4;
         let srow = j * len;
-        dst.rgba_premultiplied[drow..drow + len]
-            .copy_from_slice(&src.rgba_premultiplied[srow..srow + len]);
+        dst[drow..drow + len].copy_from_slice(&src.rgba_premultiplied[srow..srow + len]);
     }
 }
 
 /// Restore the pixels of `region` (Image pixels) in the freshly rendered `sub` from the `previous`
-/// full composite — the freeze that keeps an opaque effect intact for a frame (#46). `sub` covers
-/// the device rectangle `at`; only the part of `region` inside it is restored.
+/// full composite's RGBA bytes (`previous_width` pixels wide) — the freeze that keeps an opaque
+/// effect intact for a frame (#46). `sub` covers the device rectangle `at`; only the part of
+/// `region` inside it is restored.
 fn restore_region(
     sub: &mut Composite,
-    previous: &Composite,
+    previous: &[u8],
+    previous_width: usize,
     region: Rect,
     view: View,
     at: SubRect,
@@ -1386,14 +1513,12 @@ fn restore_region(
     if x1 <= x0 || y1 <= y0 {
         return;
     }
-    let pw = previous.width as usize;
     let sw = sub.width as usize;
     let len = (x1 - x0) * 4;
     for y in y0..y1 {
-        let prow = (y * pw + x0) * 4;
+        let prow = (y * previous_width + x0) * 4;
         let srow = ((y - at.y0) * sw + (x0 - at.x0)) * 4;
-        sub.rgba_premultiplied[srow..srow + len]
-            .copy_from_slice(&previous.rgba_premultiplied[prow..prow + len]);
+        sub.rgba_premultiplied[srow..srow + len].copy_from_slice(&previous[prow..prow + len]);
     }
 }
 
@@ -1466,4 +1591,57 @@ fn source_key(display_key: u64, generation: u64) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (display_key, generation).hash(&mut h);
     h.finish() | 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// #67: the font listing wakes the UI through its [`Job`] waker when it lands, instead of the
+    /// old 30 ms `request_repaint_after` poll. With a waker set, the worker thread requests a
+    /// repaint on its own — observed here through the context's repaint callback, with no frame run
+    /// and no timer. (Before #67 the listing thread only sent on a channel and never woke the UI.)
+    #[test]
+    fn listing_fonts_wakes_the_ui_when_it_lands() {
+        let ctx = egui::Context::default();
+        let woken = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&woken);
+        // The callback must be `Send + Sync`, so signal through a shared atomic.
+        ctx.set_request_repaint_callback(move |_| flag.store(true, Ordering::SeqCst));
+
+        let mut editor = Editor::new();
+        editor.set_waker(ctx.clone());
+        editor.list_fonts();
+        assert!(
+            matches!(editor.fonts, Fonts::Listing(_)),
+            "the listing is in flight",
+        );
+
+        // The worker requests the repaint itself once `families()` returns.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !woken.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "the font listing never woke the UI through its waker",
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    /// Without a waker (editor-only tests that step frames themselves), the listing still lands:
+    /// polling collects it once the worker has finished.
+    #[test]
+    fn the_font_listing_lands_without_a_waker() {
+        let mut editor = Editor::new();
+        editor.list_fonts();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while editor.font_families().is_none() {
+            editor.poll();
+            assert!(std::time::Instant::now() < deadline, "fonts never landed");
+            std::thread::yield_now();
+        }
+        assert!(matches!(editor.fonts, Fonts::Listed(_)));
+    }
 }

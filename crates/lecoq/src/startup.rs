@@ -16,8 +16,8 @@ use std::time::Duration;
 use lecoq_codec::Size;
 use lecoq_platform::{Config, Platform};
 
-use crate::app::{Launch, LecoqApp, startup_display_box};
-use crate::decode::PendingDecode;
+use crate::app::{Decode, Launch, LecoqApp, startup_display_box};
+use crate::decode;
 
 /// How long the first frame waits for the first-image decode once the window is ready. A 12 MP
 /// JPEG decodes in well under this on the reference machine.
@@ -41,11 +41,14 @@ pub fn run() -> eframe::Result {
     //    decoded, by which time the config has long been read.
     let (box_tx, box_rx) = mpsc::channel::<Size>();
     let first_image = path.clone().map(|path| {
-        PendingDecode::spawn(path, move || {
+        // Spawned before the window exists, so without a waker (§1.3); the app gives it the UI's
+        // repaint once it is created.
+        let job = decode::spawn_display(path.clone(), None, move || {
             box_rx
                 .recv()
                 .unwrap_or_else(|_| startup_display_box(&Config::default()))
-        })
+        });
+        Decode { job, path }
     });
     let platform = Platform::os();
     let config_read = {
@@ -119,7 +122,7 @@ pub fn run() -> eframe::Result {
             //    empty window followed by the image. A slow decode (a huge file) doesn't hold the
             //    window back for more than FIRST_FRAME_WAIT.
             if let Some(first) = &launch.first_image {
-                first.wait(FIRST_FRAME_WAIT);
+                first.job.wait(FIRST_FRAME_WAIT);
             }
             Ok(Box::new(LecoqApp::new(cc, launch)))
         }),

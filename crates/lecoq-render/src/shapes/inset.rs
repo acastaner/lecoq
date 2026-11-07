@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Weak};
 
-use lecoq_core::{Inset, PixelData, Pixels, Style};
+use lecoq_core::{Inset, Pixels, Style};
 use skia_safe as sk;
 
 use crate::effects::with_shadow;
@@ -64,32 +64,11 @@ fn skia_image(pixels: &Arc<Pixels>) -> sk::Image {
             cache.push(entry);
             return image;
         }
-        let image = convert(pixels);
+        let image = crate::to_skia(pixels);
         if cache.len() == CACHE_LEN {
             cache.remove(0);
         }
         cache.push((Arc::downgrade(pixels), image.clone()));
         image
     })
-}
-
-fn convert(pixels: &Pixels) -> sk::Image {
-    let (data, alpha) = match &pixels.data {
-        PixelData::Rgb(rgb) => {
-            let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
-            for px in rgb.chunks_exact(3) {
-                rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
-            }
-            (sk::Data::new_copy(&rgba), sk::AlphaType::Opaque)
-        }
-        PixelData::Rgba(rgba) => (sk::Data::new_copy(rgba), sk::AlphaType::Unpremul),
-    };
-    let info = sk::ImageInfo::new(
-        (pixels.width as i32, pixels.height as i32),
-        sk::ColorType::RGBA8888,
-        alpha,
-        None,
-    );
-    sk::images::raster_from_data(&info, data, pixels.width as usize * 4)
-        .expect("a Skia image from the Inset's pixels")
 }

@@ -5,11 +5,13 @@
 //! state in `lecoq-core`. `ui()` polls background work, then lays out the panels.
 
 mod copy;
+pub(crate) mod dialog;
+pub(crate) mod job;
 mod save;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use lecoq_codec::{DisplayImage, Size, fit_within};
@@ -21,13 +23,15 @@ use lecoq_siblings::{Decoded, Direction};
 use crate::Command;
 use crate::animation::Animation;
 use crate::app::copy::CopyState;
+use crate::app::dialog::DialogSlot;
+use crate::app::job::Job;
 use crate::app::save::SaveState;
 use crate::config_save::ConfigSaver;
-use crate::decode::PendingDecode;
+use crate::decode::{self, DecodeResult};
 use crate::editor::{DisplayPixels, Editor, ImageOp, MAX_EDIT_PIXELS, PanCursor};
 use crate::pan::PanGesture;
 use crate::paste::{Destination, Incoming, PendingIncoming};
-use crate::siblings::{Jump, Navigation, Step};
+use crate::siblings::{Jump, Navigation, Position, Step};
 use crate::strings;
 use crate::tools::ToolId;
 use crate::ui::help_dialog::{self, HelpDialog};
@@ -53,7 +57,7 @@ pub struct Launch {
     pub platform: Platform,
     pub config: Config,
     /// The first-image decode started at `main()` (§1.3), if a path was given.
-    pub(crate) first_image: Option<PendingDecode>,
+    pub(crate) first_image: Option<Decode>,
     /// The display-size cache cap in bytes (§3.3). Tests lower it to watch eviction.
     pub cache_cap: usize,
     /// The Sibling ordering rule (§3.2): the platform's own. Tests pin one so the order doesn't
@@ -94,10 +98,11 @@ impl Launch {
         ready: impl FnOnce() + Send + 'static,
     ) {
         let display_box = startup_display_box(&self.config);
-        self.first_image = Some(PendingDecode::spawn(path, move || {
+        let job = decode::spawn_display(path.clone(), None, move || {
             ready();
             display_box
-        }));
+        });
+        self.first_image = Some(Decode { job, path });
     }
 
     /// §1.3 step 2 / §8.4: should this process exit, a running lecoq having taken `path`? With
@@ -136,9 +141,10 @@ pub(crate) struct ShownImage {
     /// The display-size decode (§5.2), re-decoded larger if the canvas outgrows it (a resize, or a
     /// HiDPI scale factor the startup decode couldn't know).
     display: egui::TextureHandle,
-    /// `display`'s pixels, shared with egui (no copy). Tests read them; so will the on-screen
-    /// composite (§7.2).
-    display_pixels: Arc<egui::ColorImage>,
+    /// `display`'s pixels: premultiplied, upload-ready [`lecoq_core::Pixels`] (#64, §7.2), the one
+    /// pixel type. The display texture is uploaded from these; the on-screen composite and the
+    /// save fallback read them, and tests peek at them through [`LecoqApp::shown_pixel`].
+    display_pixels: Arc<lecoq_core::Pixels>,
     /// Identifies `display_pixels` for the Skia renderer's cache (a new key per decode).
     display_key: u64,
     /// The full-resolution decode, once zoomed past the display-size one (§7.2). Capped at the GPU's
@@ -182,7 +188,7 @@ impl ShownImage {
         };
         if let Some(first) = animation.first_frame() {
             self.display
-                .set(first.clone(), egui::TextureOptions::LINEAR);
+                .set(color_image(first), egui::TextureOptions::LINEAR);
             self.display_pixels = first.clone();
             self.display_key = next_display_key();
         }
@@ -202,17 +208,12 @@ struct Trashed {
     waits_for_scan: bool,
 }
 
-/// Which pixels a background decode of the shown Image brings.
-#[derive(Clone, Copy, PartialEq)]
-enum Pixels {
-    Display,
-    Full,
-}
-
-/// A decode of the shown Image that brings more pixels.
-struct Upgrade {
-    pending: PendingDecode,
-    pixels: Pixels,
+/// A display-size decode in flight and the file it is for: the open (and first-image) decode, or a
+/// re-decode of the shown Image for a larger canvas (§5.2). The full-resolution decode is the
+/// editor's single one (#57), consumed through [`ShownImage::full`], not a [`Decode`].
+pub(crate) struct Decode {
+    pub(crate) job: Job<DecodeResult>,
+    pub(crate) path: PathBuf,
 }
 
 /// What waits on the unsaved-changes prompt (#35, §6.4): done right away without unsaved changes,
@@ -271,13 +272,13 @@ pub struct LecoqApp {
     platform: Platform,
     config: Config,
     config_saver: ConfigSaver,
-    pending: Option<PendingDecode>,
+    pending: Option<Decode>,
     /// The file on screen (or that failed to open, when `error` is set).
     path: Option<PathBuf>,
     shown: Option<ShownImage>,
     /// "Can't open <name>: <reason>" (§5.2), shown on the canvas instead of an image.
     error: Option<String>,
-    upgrade: Option<Upgrade>,
+    upgrade: Option<Decode>,
     view: View,
     /// The pan drag in progress (Space+left or middle button).
     pan: PanGesture,
@@ -287,7 +288,7 @@ pub struct LecoqApp {
     canvas: Option<canvas::Layout>,
     first_paint: FirstPaint,
     /// The open dialog while it is up: receives the chosen path, or `None` on Cancel.
-    open_dialog: Option<mpsc::Receiver<Option<PathBuf>>>,
+    open_dialog: Option<DialogSlot>,
     navigation: Navigation,
     /// The transient status-bar message and when it was posted.
     message: Option<(String, Instant)>,
@@ -314,7 +315,7 @@ pub struct LecoqApp {
     /// A pasted or Ctrl+dropped image being read and decoded (§4.6, §6.3).
     incoming: Option<PendingIncoming>,
     /// The Copy to / Move to folder picker while it is up, and which operation it is for (#53).
-    folder_dialog: Option<(FolderOp, mpsc::Receiver<Option<PathBuf>>)>,
+    folder_dialog: Option<(FolderOp, DialogSlot)>,
     /// The last Target folder a Copy to / Move to chose, where the next picker starts (stories 7,
     /// 8). Seeded from and persisted to `config.toml`, so it survives a restart.
     last_target: Option<PathBuf>,
@@ -323,12 +324,26 @@ pub struct LecoqApp {
     /// The Copy to / Move to warning modal while it is up (ADR 0009): the outcome-specific message
     /// to show. Set for every outcome that did not place the file; successes keep the status bar.
     file_op_warning: Option<String>,
+    /// The status bar's formatted position and zoom labels, cached so they are re-rendered only
+    /// when the value behind them changes, not allocated every frame (#66).
+    status_labels: StatusLabels,
+}
+
+/// Cached status-bar strings: each is kept until the value it shows changes (#66).
+#[derive(Default)]
+struct StatusLabels {
+    /// The Sibling position label and the [`Position`] it was rendered from.
+    position: Option<(Position, String)>,
+    /// The zoom label and the [`Zoom`] it was rendered from.
+    zoom: Option<(Zoom, String)>,
 }
 
 impl LecoqApp {
     pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> Self {
-        if let Some(pending) = &launch.first_image {
-            pending.wake(&cc.egui_ctx);
+        // The first-image decode was spawned before the window existed (§1.3): give it the UI's
+        // repaint now (it wakes at once if it already landed). Every other job spawns with a waker.
+        if let Some(first) = &launch.first_image {
+            first.job.set_waker(job::waker(&cc.egui_ctx));
         }
         // Ctrl+plus / minus / 0 would scale the whole UI; the image zoom is on plain +, - and 0.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -338,6 +353,7 @@ impl LecoqApp {
             .instance
             .set_wake(Box::new(move || ctx.request_repaint()));
         let mut editor = Editor::with_tool_styles(&launch.config.tools);
+        editor.set_waker(cc.egui_ctx.clone());
         editor.set_history_pixel_cap(launch.history_pixel_cap);
         // §8.3: the highlight tool's magnification is the `magnify_factor` setting.
         editor.set_tool_default(
@@ -379,6 +395,7 @@ impl LecoqApp {
             last_target,
             context_menu: None,
             file_op_warning: None,
+            status_labels: StatusLabels::default(),
         };
         if from_clipboard {
             app.execute(Command::Paste);
@@ -418,9 +435,13 @@ impl LecoqApp {
                 if let Property::Magnification(factor) = property {
                     self.set_magnify_factor(factor);
                 }
-                self.editor.set_property(property, merge);
-                // §4.3, §8.3: the tools' defaults persist between runs.
-                let styles = self.editor.tool_styles_config();
+                let changed = self.editor.set_property(property, merge);
+                // §4.3, §8.3: the tools' defaults persist between runs. Only the tools the change
+                // applied to are re-serialised, not every tool on every tick (#61).
+                let styles: Vec<_> = changed
+                    .iter()
+                    .filter_map(|&tool| self.editor.tool_style_config(tool))
+                    .collect();
                 self.update_config(|config| config.tools.extend(styles));
             }
             Command::Save => self.save(),
@@ -481,8 +502,15 @@ impl LecoqApp {
     }
 
     /// The last Skia composite of the canvas, while there are Annotations (§7.2).
-    pub fn composite(&self) -> Option<&Composite> {
+    pub fn composite(&self) -> Option<Composite> {
         self.editor.composite()
+    }
+
+    /// How many times the composite has been (re)rendered for the open Image (#58, ADR 0011): a
+    /// test seam for the whole-Image composite's reuse across pan and zoom below the display
+    /// density. Off the render path.
+    pub fn composite_renders(&self) -> u64 {
+        self.editor.composite_renders()
     }
 
     /// The crop tool's region, in Image pixels (§4.1 C).
@@ -589,8 +617,10 @@ impl LecoqApp {
     /// Is background work still pending (a decode, an answer from the open dialog, a config write,
     /// the Sibling scan, prefetch, …)? Tests wait for this to clear.
     pub fn is_busy(&self) -> bool {
-        self.pending.is_some()
-            || self.upgrade.is_some()
+        // A fold over the job slots (each asks its own `Job::is_running`) and the dialogs, plus the
+        // remaining non-slot state (prompts, queued work, the Sibling scan).
+        self.pending.as_ref().is_some_and(|d| d.job.is_running())
+            || self.upgrade.as_ref().is_some_and(|d| d.job.is_running())
             || self.open_dialog.is_some()
             || self.config_saver.is_busy()
             || self
@@ -600,12 +630,16 @@ impl LecoqApp {
             || self.editor.is_busy()
             || self.navigation.is_busy()
             || self.save.dialog.is_some()
-            || self.save.saving.is_some()
+            || self.save.saving.as_ref().is_some_and(|s| s.is_running())
             || self.save.queued.is_some()
-            || self.copy.in_progress.is_some()
+            || self
+                .copy
+                .in_progress
+                .as_ref()
+                .is_some_and(|c| c.is_running())
             || self.copy.queued
             || self.folder_dialog.is_some()
-            || self.incoming.is_some()
+            || self.incoming.as_ref().is_some_and(|i| i.is_running())
             || self.trashed.as_ref().is_some_and(|t| t.waits_for_scan)
             || self.save.after_save.is_some()
     }
@@ -878,17 +912,22 @@ impl LecoqApp {
         if self.fullscreen.wanted || fullscreen == Some(true) || minimised == Some(true) {
             return;
         }
-        self.update_config(|config| {
-            if let Some(maximised) = maximised {
-                config.window.maximised = maximised;
-            }
-            if !config.window.maximised
-                && let Some(inner) = inner
-            {
-                config.window.width = inner.width().round();
-                config.window.height = inner.height().round();
-            }
-        });
+        // Work out the window this frame would record and compare the three fields first, so an
+        // unchanged window (every frame of an idle app) touches nothing. The settings-change path
+        // clones and compares the whole Config, so it must run only on a real change (#61).
+        let mut window = self.config.window;
+        if let Some(maximised) = maximised {
+            window.maximised = maximised;
+        }
+        if !window.maximised
+            && let Some(inner) = inner
+        {
+            window.width = inner.width().round();
+            window.height = inner.height().round();
+        }
+        if window != self.config.window {
+            self.update_config(|config| config.window = window);
+        }
     }
 
     /// Ctrl+O. Only one open dialog at a time: asking again while it is up does nothing.
@@ -896,25 +935,26 @@ impl LecoqApp {
         if self.open_dialog.is_some() {
             return;
         }
-        let (tx, rx) = mpsc::channel();
-        self.open_dialog = Some(rx);
         let ctx = self.ctx.clone();
         let text = lecoq_platform::OpenDialogText {
             title: strings::OPEN_DIALOG_TITLE.to_owned(),
             images: strings::IMAGES_FILTER.to_owned(),
             all_files: strings::ALL_FILES_FILTER.to_owned(),
         };
-        self.platform.dialogs.pick_image(
-            &text,
-            Box::new(move |chosen| {
-                let _ = tx.send(chosen);
-                ctx.request_repaint();
-            }),
-        );
+        self.open_dialog = Some(DialogSlot::open(&ctx, |reply| {
+            self.platform.dialogs.pick_image(&text, reply);
+        }));
     }
 
     fn poll_open_dialog(&mut self) {
-        if let Some(Some(path)) = dialog_answer(&mut self.open_dialog) {
+        let Some(slot) = &self.open_dialog else {
+            return;
+        };
+        let Some(answer) = slot.answer() else {
+            return;
+        };
+        self.open_dialog = None;
+        if let Some(path) = answer {
             self.execute(Command::Open(path));
         }
     }
@@ -926,7 +966,11 @@ impl LecoqApp {
         self.trashed = None;
         self.message = None;
         // The previous Image stays on screen until the new one is decoded (§3.3).
-        self.pending = Some(PendingDecode::spawn(path.to_owned(), move || display_box));
+        let path = path.to_owned();
+        let job = decode::spawn_display(path.clone(), Some(job::waker(&self.ctx)), move || {
+            display_box
+        });
+        self.pending = Some(Decode { job, path });
     }
 
     /// Move to the next or previous Sibling (§3.1). Callers go through
@@ -984,12 +1028,11 @@ impl LecoqApp {
 
     /// The display-size decode, when it is the full resolution: what a save or copy uses when the
     /// file can't be decoded any more (deleted or changed on disk, #21).
-    fn full_size_display_pixels(&self) -> Option<Arc<egui::ColorImage>> {
+    fn full_size_display_pixels(&self) -> Option<Arc<lecoq_core::Pixels>> {
         self.shown
             .as_ref()
             .filter(|s| {
-                let [w, h] = s.display_pixels.size;
-                Size::new(w as u32, h as u32) == s.original_size
+                Size::new(s.display_pixels.width, s.display_pixels.height) == s.original_size
             })
             .map(|s| s.display_pixels.clone())
     }
@@ -1017,8 +1060,8 @@ impl LecoqApp {
             self.platform.clipboard.clone(),
             destination,
             self.display_box(),
+            Some(job::waker(&self.ctx)),
         );
-        incoming.pending.wake(&self.ctx);
         self.incoming = Some(incoming);
     }
 
@@ -1038,17 +1081,20 @@ impl LecoqApp {
         if self.incoming.is_some() || !self.editor.can_edit() || self.editor.in_gesture() {
             return;
         }
-        let incoming = PendingIncoming::file(path, Destination::Inset, self.display_box());
-        incoming.pending.wake(&self.ctx);
+        let incoming = PendingIncoming::file(
+            path,
+            Destination::Inset,
+            self.display_box(),
+            Some(job::waker(&self.ctx)),
+        );
         self.incoming = Some(incoming);
     }
 
     fn poll_incoming(&mut self, ctx: &egui::Context) {
-        let Some(incoming) = &self.incoming else {
+        let Some(incoming) = &mut self.incoming else {
             return;
         };
-        incoming.pending.wake(ctx);
-        let Some(result) = incoming.pending.take() else {
+        let Some(result) = incoming.job.poll() else {
             return;
         };
         let incoming = self.incoming.take().expect("checked above");
@@ -1097,7 +1143,7 @@ impl LecoqApp {
         self.error = None;
         self.message = None;
         self.editor.open_pixels(Arc::new(full));
-        let (texture, display_pixels) = upload(ctx, &display, Pixels::Display);
+        let (texture, display_pixels) = upload(ctx, &display);
         self.shown = Some(ShownImage {
             path: None,
             file_name: strings::CLIPBOARD_IMAGE.to_owned(),
@@ -1286,29 +1332,23 @@ impl LecoqApp {
             FolderOp::Copy => strings::COPY_TO_DIALOG_TITLE,
             FolderOp::Move => strings::MOVE_TO_DIALOG_TITLE,
         };
-        let (tx, rx) = mpsc::channel();
-        self.folder_dialog = Some((op, rx));
         let ctx = self.ctx.clone();
-        self.platform.dialogs.pick_folder(
-            title,
-            &start,
-            Box::new(move |chosen| {
-                let _ = tx.send(chosen);
-                ctx.request_repaint();
+        self.folder_dialog = Some((
+            op,
+            DialogSlot::open(&ctx, |reply| {
+                self.platform.dialogs.pick_folder(title, &start, reply);
             }),
-        );
+        ));
     }
 
     /// The folder picker's answer, once it has come: a chosen Target folder starts the operation
     /// (through the unsaved-changes flow); Cancel does nothing at all (story 9).
     fn poll_folder_dialog(&mut self) {
-        let answer = match &self.folder_dialog {
-            Some((_, rx)) => match rx.try_recv() {
-                Ok(chosen) => chosen,
-                Err(mpsc::TryRecvError::Empty) => return,
-                Err(mpsc::TryRecvError::Disconnected) => None,
-            },
-            None => return,
+        let Some((_, slot)) = &self.folder_dialog else {
+            return;
+        };
+        let Some(answer) = slot.answer() else {
+            return;
         };
         let (op, _) = self.folder_dialog.take().expect("checked above");
         let Some(folder) = answer else {
@@ -1433,15 +1473,14 @@ impl LecoqApp {
         if self.trashed.as_ref().is_some_and(|t| t.waits_for_scan) && self.navigation.is_scanned() {
             self.leave_trashed();
         }
-        let Some(pending) = &self.pending else {
+        let Some(pending) = &mut self.pending else {
             return;
         };
-        pending.wake(ctx);
-        let Some(result) = pending.take() else {
+        let Some(result) = pending.job.poll() else {
             return;
         };
-        let path = pending.path().to_owned();
-        self.pending = None;
+        let pending = self.pending.take().expect("checked above");
+        let path = pending.path;
         self.show_decoded(ctx, path.clone(), result.map(Arc::new).map_err(Arc::new));
         if self.first_paint == FirstPaint::Done {
             // A newly opened file: its folder is the new Sibling list.
@@ -1456,7 +1495,7 @@ impl LecoqApp {
         match decoded {
             Ok(image) => {
                 self.editor.open(Some(&path), image.original_size);
-                let (display, display_pixels) = upload(ctx, &image, Pixels::Display);
+                let (display, display_pixels) = upload(ctx, &image);
                 self.shown = Some(ShownImage {
                     path: Some(path),
                     file_name,
@@ -1484,11 +1523,10 @@ impl LecoqApp {
     }
 
     fn poll_upgrade(&mut self, ctx: &egui::Context) {
-        let Some(upgrade) = &self.upgrade else {
+        let Some(upgrade) = &mut self.upgrade else {
             return;
         };
-        upgrade.pending.wake(ctx);
-        let Some(result) = upgrade.pending.take() else {
+        let Some(result) = upgrade.job.poll() else {
             return;
         };
         let upgrade = self.upgrade.take().expect("checked above");
@@ -1496,7 +1534,7 @@ impl LecoqApp {
             // A failed re-decode (the file changed or went away) keeps the pixels on screen.
             return;
         };
-        if Some(upgrade.pending.path()) != shown.path.as_deref()
+        if Some(upgrade.path.as_path()) != shown.path.as_deref()
             || image.original_size != shown.original_size
         {
             return;
@@ -1505,31 +1543,26 @@ impl LecoqApp {
             // The animation's frames are drawn instead.
             return;
         }
-        let (texture, pixels) = upload(ctx, &image, upgrade.pixels);
-        match upgrade.pixels {
-            Pixels::Display => {
-                shown.display = texture;
-                shown.display_pixels = pixels;
-                shown.display_key = next_display_key();
-            }
-            Pixels::Full => shown.full = Some(texture),
-        }
+        let (texture, pixels) = upload(ctx, &image);
+        shown.display = texture;
+        shown.display_pixels = pixels;
+        shown.display_key = next_display_key();
     }
 
-    /// Start a decode with more pixels when the Image is drawn larger than the pixels on hand: at
-    /// Fit, a display-size re-decode for the canvas's physical size; zoomed, the full resolution
-    /// (§7.2). One at a time, never for the Image that's about to be replaced, and not before the
-    /// first paint (§1.3).
+    /// Bring more pixels when the Image is drawn larger than the pixels on hand: at Fit, a
+    /// display-size re-decode for the canvas's physical size; zoomed past it, the full-resolution
+    /// pixels (§7.2). The full resolution is the editor's single shared decode (#57): this asks for
+    /// it rather than running its own, so zooming and editing decode the file once between them.
+    /// Never for the Image that's about to be replaced, and not before the first paint (§1.3).
     fn request_pixels(&mut self, ctx: &egui::Context) {
-        if self.upgrade.is_some() || self.pending.is_some() || self.first_paint != FirstPaint::Done
-        {
+        if self.pending.is_some() || self.first_paint != FirstPaint::Done {
             return;
         }
         // After an Image operation the canvas draws the Document's own pixels, not the file's.
         if self.document().is_some_and(|d| !d.is_original_image()) {
             return;
         }
-        let (Some(layout), Some(shown)) = (self.canvas, self.shown.as_mut()) else {
+        let (Some(layout), Some(shown)) = (self.canvas, self.shown.as_ref()) else {
             return;
         };
         if shown.may_animate || shown.animation.is_some() {
@@ -1537,9 +1570,9 @@ impl LecoqApp {
             return;
         }
         // A clipboard image has no file to decode again: the composite draws its full pixels.
-        let Some(path) = shown.path.clone() else {
+        if shown.path.is_none() {
             return;
-        };
+        }
         let Some(on_screen) = layout.image_px() else {
             return;
         };
@@ -1548,25 +1581,62 @@ impl LecoqApp {
             return;
         }
         let original = shown.original_size;
-        let (pixels, max) = match self.view.zoom {
-            Zoom::Fit => (Pixels::Display, layout.area_px()),
+        match self.view.zoom {
+            Zoom::Fit => self.request_display_redecode(ctx, layout.area_px()),
             Zoom::Scale(_)
                 if u64::from(original.width) * u64::from(original.height)
                     <= FULL_RESOLUTION_LIMIT =>
             {
-                let side = ctx.input(|i| i.max_texture_side) as u32;
-                (Pixels::Full, Size::new(side, side))
+                self.upgrade_to_full(ctx)
             }
-            Zoom::Scale(_) => return,
+            // Above the full-resolution limit nothing is decoded (§4.7); the display pixels stay.
+            Zoom::Scale(_) => {}
+        }
+    }
+
+    /// Re-decode the display-size pixels for a `max`-sized canvas (a resize or a HiDPI scale the
+    /// startup decode couldn't know), one at a time.
+    fn request_display_redecode(&mut self, ctx: &egui::Context, max: Size) {
+        if self.upgrade.is_some() {
+            return;
+        }
+        let Some(shown) = self.shown.as_mut() else {
+            return;
         };
-        let target = fit_within(original, max);
+        let target = fit_within(shown.original_size, max);
         if target.width <= shown.requested.width && target.height <= shown.requested.height {
             return;
         }
         shown.requested = target;
-        let pending = PendingDecode::spawn(path, move || max);
-        pending.wake(ctx);
-        self.upgrade = Some(Upgrade { pending, pixels });
+        let path = shown.path.clone().expect("checked by the caller");
+        let job = decode::spawn_display(path.clone(), Some(job::waker(ctx)), move || max);
+        self.upgrade = Some(Decode { job, path });
+    }
+
+    /// Build the full-resolution zoom texture from the editor's single shared decode (#57). Starts
+    /// that decode if it isn't running yet; once its pixels have landed (in the Document), uploads
+    /// them — capped at the GPU's largest texture — as [`ShownImage::full`]. The editor runs the
+    /// decode whether the first ask came from here or from the first tool use, so the file is
+    /// decoded once and both paths read the same pixels.
+    fn upgrade_to_full(&mut self, ctx: &egui::Context) {
+        self.editor.request_full_decode();
+        let Some(full) = self
+            .editor
+            .document()
+            .and_then(|d| d.full_resolution())
+            .cloned()
+        else {
+            // Still decoding (the editor is busy meanwhile): the texture is built when it lands.
+            return;
+        };
+        let Some(shown) = self.shown.as_mut() else {
+            return;
+        };
+        if shown.full.is_some() {
+            return;
+        }
+        let side = ctx.input(|i| i.max_texture_side) as u32;
+        shown.full = Some(full_texture(ctx, &full, Size::new(side, side)));
     }
 
     /// Start decoding the frames of a GIF or WebP, after the first paint (§1.3).
@@ -1636,7 +1706,7 @@ impl LecoqApp {
         if let Some(frame) = animation.tick(now, ctx) {
             shown
                 .display
-                .set(frame.clone(), egui::TextureOptions::LINEAR);
+                .set(color_image(&frame), egui::TextureOptions::LINEAR);
             shown.display_pixels = frame;
             shown.display_key = next_display_key();
         }
@@ -1724,38 +1794,72 @@ impl LecoqApp {
     }
 
     /// The text the canvas shows instead of an Image: the decode error, or the empty-window hint.
-    fn canvas_message(&self) -> Option<String> {
+    fn canvas_message(&self) -> Option<std::borrow::Cow<'static, str>> {
+        use std::borrow::Cow;
         if self.shown.is_some() {
             return None;
         }
         if let Some(error) = &self.error {
-            return Some(error.clone());
+            // The error state is rare; the common idle branch below borrows the static hint.
+            return Some(Cow::Owned(error.clone()));
         }
         // While the first Image decodes, the canvas stays blank rather than flash the hint.
-        self.pending.is_none().then(|| {
-            strings::empty_window_hint(
-                &crate::ui::shortcut_text(&self.ctx, &crate::input::OPEN),
-                &crate::ui::shortcut_text(&self.ctx, &crate::input::PASTE),
-            )
-        })
+        self.pending
+            .is_none()
+            .then(|| Cow::Borrowed(empty_window_hint(&self.ctx)))
     }
 
     /// A pixel of the display-size decode on screen (after orientation and colour conversion):
     /// `None` when no Image is shown or `(x, y)` is outside it.
     pub fn shown_pixel(&self, x: u32, y: u32) -> Option<egui::Color32> {
         let pixels = &self.shown.as_ref()?.display_pixels;
-        let [w, h] = pixels.size;
+        let (w, h) = (pixels.width as usize, pixels.height as usize);
         let (x, y) = (x as usize, y as usize);
-        (x < w && y < h).then(|| pixels.pixels[y * w + x])
+        if x >= w || y >= h {
+            return None;
+        }
+        // Display pixels are premultiplied RGBA; match the other layouts for totality.
+        let color = match &pixels.data {
+            lecoq_core::PixelData::RgbaPremultiplied(d) => {
+                let i = (y * w + x) * 4;
+                egui::Color32::from_rgba_premultiplied(d[i], d[i + 1], d[i + 2], d[i + 3])
+            }
+            lecoq_core::PixelData::Rgba(d) => {
+                let i = (y * w + x) * 4;
+                egui::Color32::from_rgba_unmultiplied(d[i], d[i + 1], d[i + 2], d[i + 3])
+            }
+            lecoq_core::PixelData::Rgb(d) => {
+                let i = (y * w + x) * 3;
+                egui::Color32::from_rgb(d[i], d[i + 1], d[i + 2])
+            }
+        };
+        Some(color)
+    }
+
+    /// Refresh the cached status-bar labels (#66): the position and zoom strings are re-rendered
+    /// only when the value behind them changes, not allocated every frame.
+    fn refresh_status_labels(&mut self) {
+        let position = self.path.as_deref().map(|p| self.navigation.position(p));
+        if self.status_labels.position.as_ref().map(|(p, _)| *p) != position {
+            self.status_labels.position = position.map(|p| (p, p.to_string()));
+        }
+        let zoom = self.shown.as_ref().map(|_| self.view.zoom);
+        if self.status_labels.zoom.as_ref().map(|(z, _)| *z) != zoom {
+            self.status_labels.zoom = zoom.map(|z| (z, z.label()));
+        }
     }
 
     fn status_bar(&self) -> status_bar::StatusBar<'_> {
         status_bar::StatusBar {
             file_name: self.shown.as_ref().map(|s| s.file_name.as_str()),
             modified: self.is_modified(),
-            position: self.path.as_deref().map(|p| self.navigation.position(p)),
+            position: self
+                .status_labels
+                .position
+                .as_ref()
+                .map(|(_, s)| s.as_str()),
             pixel_size: self.image_size(),
-            zoom: self.shown.as_ref().map(|_| self.view.zoom),
+            zoom: self.status_labels.zoom.as_ref().map(|(_, s)| s.as_str()),
             animation: self.shown.as_ref().and_then(|s| {
                 if s.frozen {
                     Some(status_bar::AnimationState::Frozen)
@@ -1850,7 +1954,7 @@ impl eframe::App for LecoqApp {
         self.poll_folder_dialog();
         self.poll_save_dialog();
         self.poll_save(&ctx);
-        self.poll_copy(&ctx);
+        self.poll_copy();
         self.poll_incoming(&ctx);
         self.poll_after_save();
         self.follow_directory(&ctx);
@@ -1858,7 +1962,7 @@ impl eframe::App for LecoqApp {
         self.poll_upgrade(&ctx);
         self.play_animation(&ctx);
         self.navigation.hold(self.animation_bytes());
-        self.editor.poll(&ctx);
+        self.editor.poll();
         self.expire_message(&ctx);
         self.drive_bench(&ctx);
         self.sync_fullscreen(&ctx);
@@ -1890,6 +1994,7 @@ impl eframe::App for LecoqApp {
             {
                 self.execute(command);
             }
+            self.refresh_status_labels();
             status_bar::show(ui, &self.status_bar());
         }
         // Laying out keeps the zoomed Image in bounds, so the view comes back updated.
@@ -1903,7 +2008,7 @@ impl eframe::App for LecoqApp {
         let editor = &mut self.editor;
         let display = self.shown.as_ref().map(|s| DisplayPixels {
             key: s.display_key,
-            image: &s.display_pixels,
+            pixels: &s.display_pixels,
         });
         self.canvas = Some(canvas::show(
             ui,
@@ -1963,18 +2068,6 @@ fn file_name(path: &Path) -> String {
         .into_owned()
 }
 
-/// The answer of the file dialog waited on in `slot`, once it has come: the path chosen, or
-/// `None` for Cancel (or a dialog that went away). `slot` is emptied then; `None` while it is up.
-fn dialog_answer(slot: &mut Option<mpsc::Receiver<Option<PathBuf>>>) -> Option<Option<PathBuf>> {
-    let chosen = match slot.as_ref()?.try_recv() {
-        Ok(chosen) => chosen,
-        Err(mpsc::TryRecvError::Empty) => return None,
-        Err(mpsc::TryRecvError::Disconnected) => None,
-    };
-    *slot = None;
-    Some(chosen)
-}
-
 /// Do `a` and `b` name the same file? (Save As may spell it differently.)
 fn same_file(a: &Path, b: &Path) -> bool {
     a == b
@@ -1986,28 +2079,48 @@ fn same_file(a: &Path, b: &Path) -> bool {
 fn upload(
     ctx: &egui::Context,
     image: &DisplayImage,
-    kind: Pixels,
-) -> (egui::TextureHandle, Arc<egui::ColorImage>) {
-    let pixels = Arc::new(color_image(image));
-    let (name, options) = match kind {
-        Pixels::Display => ("image", egui::TextureOptions::LINEAR),
-        // Drawn anywhere from just above the display size down: mipmaps keep it from aliasing.
-        Pixels::Full => (
-            "image-full",
-            egui::TextureOptions {
-                mipmap_mode: Some(egui::TextureFilter::Linear),
-                ..egui::TextureOptions::LINEAR
-            },
-        ),
-    };
-    (ctx.load_texture(name, pixels.clone(), options), pixels)
+) -> (egui::TextureHandle, Arc<lecoq_core::Pixels>) {
+    // The pixels are already upload-ready (premultiplied on the decode pool, #56): the switch path
+    // shares the cache's `Arc` and uploads, with no conversion on the UI thread. The shown Image's
+    // `display_pixels` field is that same `Arc`, so the pixels live once, counted against the cap.
+    let pixels = Arc::clone(&image.pixels);
+    (
+        ctx.load_texture("image", color_image(&pixels), egui::TextureOptions::LINEAR),
+        pixels,
+    )
 }
 
-pub(crate) fn color_image(image: &DisplayImage) -> egui::ColorImage {
-    let size = [image.size.width as usize, image.size.height as usize];
-    match &image.pixels {
-        lecoq_codec::Pixels::Rgb(rgb) => egui::ColorImage::from_rgb(size, rgb),
-        lecoq_codec::Pixels::Rgba(rgba) => egui::ColorImage::from_rgba_unmultiplied(size, rgba),
+/// Upload the editor's shared full-resolution `pixels` as the zoom texture (#57, §7.2), reduced to
+/// fit within `max` (the GPU's largest texture) when the Image is larger. Drawn anywhere from just
+/// above the display size down, so mipmaps keep it from aliasing.
+fn full_texture(
+    ctx: &egui::Context,
+    pixels: &lecoq_core::Pixels,
+    max: Size,
+) -> egui::TextureHandle {
+    let size = Size::new(pixels.width, pixels.height);
+    let options = egui::TextureOptions {
+        mipmap_mode: Some(egui::TextureFilter::Linear),
+        ..egui::TextureOptions::LINEAR
+    };
+    if fit_within(size, max) == size {
+        ctx.load_texture("image-full", color_image(pixels), options)
+    } else {
+        let reduced = lecoq_codec::reduced_to_fit(pixels, max);
+        ctx.load_texture("image-full", color_image(&reduced), options)
+    }
+}
+
+/// The egui `ColorImage` that wraps premultiplied display [`lecoq_core::Pixels`] for a texture
+/// upload, with no re-premultiplication (the app keeps wrapping, #64).
+pub(crate) fn color_image(pixels: &lecoq_core::Pixels) -> egui::ColorImage {
+    let size = [pixels.width as usize, pixels.height as usize];
+    match &pixels.data {
+        lecoq_core::PixelData::RgbaPremultiplied(rgba) => {
+            egui::ColorImage::from_rgba_premultiplied(size, rgba)
+        }
+        lecoq_core::PixelData::Rgb(rgb) => egui::ColorImage::from_rgb(size, rgb),
+        lecoq_core::PixelData::Rgba(rgba) => egui::ColorImage::from_rgba_unmultiplied(size, rgba),
     }
 }
 
@@ -2015,6 +2128,29 @@ pub(crate) fn color_image(image: &DisplayImage) -> egui::ColorImage {
 fn next_display_key() -> u64 {
     static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
     NEXT_KEY.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The empty-window hint ("Open (Ctrl+O), drop or paste (Ctrl+V) an image"), built once per OS
+/// rather than every idle frame (#66). It depends only on the OS's shortcut formatting, so it is
+/// memoised keyed on the OS (which changes only in tests, where the harness flips it): a tiny
+/// per-OS string is kept for the process, and the common idle frame allocates nothing.
+fn empty_window_hint(ctx: &egui::Context) -> &'static str {
+    static HINTS: std::sync::Mutex<Vec<(egui::os::OperatingSystem, &'static str)>> =
+        std::sync::Mutex::new(Vec::new());
+    let os = ctx.os();
+    let mut hints = HINTS.lock().expect("empty-window hint cache");
+    if let Some((_, hint)) = hints.iter().find(|(cached, _)| *cached == os) {
+        return hint;
+    }
+    let hint: &'static str = Box::leak(
+        strings::empty_window_hint(
+            &crate::ui::shortcut_text(ctx, &crate::input::OPEN),
+            &crate::ui::shortcut_text(ctx, &crate::input::PASTE),
+        )
+        .into_boxed_str(),
+    );
+    hints.push((os, hint));
+    hint
 }
 
 fn texture_size(texture: &egui::TextureHandle) -> Size {

@@ -4,17 +4,25 @@
 //! incoming-image flow stay in [`super`].
 
 use super::LecoqApp;
+use super::job::{self, Job};
 use crate::editor::SaveStamp;
-use crate::save::{AnnotationsCopyJob, CopyJob, FlattenInput, PendingCopy};
+use crate::save::{AnnotationsCopyJob, CopyJob, FlattenInput, SaveResult};
 use crate::strings;
 
 /// A copy running on the worker thread (§6.2): the pending work, the Document edit it holds a
 /// decode for, and the status message to post when it lands. Replaces the anonymous tuple the app
 /// used to carry.
 pub(super) struct CopyInProgress {
-    pending: PendingCopy,
+    job: Job<SaveResult>,
     stamp: SaveStamp,
     message: &'static str,
+}
+
+impl CopyInProgress {
+    /// Is the worker-thread copy still outstanding?
+    pub(super) fn is_running(&self) -> bool {
+        self.job.is_running()
+    }
 }
 
 /// The clipboard-copy flow's state (§6.2): a copy running on the worker thread, and a copy asked
@@ -44,8 +52,9 @@ impl LecoqApp {
             .document()
             .map(|d| d.selection().to_vec())
             .unwrap_or_default();
-        let (pending, message) = if selection.is_empty() {
-            let job = CopyJob {
+        let waker = Some(job::waker(&self.ctx));
+        let (copying, message) = if selection.is_empty() {
+            let copy_job = CopyJob {
                 input: FlattenInput {
                     doc: source.doc,
                     source: source.path,
@@ -53,36 +62,37 @@ impl LecoqApp {
                 },
                 clipboard: self.platform.clipboard.clone(),
             };
-            (PendingCopy::spawn_copy(job), strings::IMAGE_COPIED)
+            (
+                crate::save::spawn_copy(copy_job, waker),
+                strings::IMAGE_COPIED,
+            )
         } else {
-            let job = AnnotationsCopyJob {
+            let annotations_job = AnnotationsCopyJob {
                 doc: source.doc,
                 ids: selection,
                 clipboard: self.platform.clipboard.clone(),
             };
             (
-                PendingCopy::spawn_copy_annotations(job),
+                crate::save::spawn_copy_annotations(annotations_job, waker),
                 strings::ANNOTATIONS_COPIED,
             )
         };
-        pending.wake(&self.ctx);
         self.copy.in_progress = Some(CopyInProgress {
-            pending,
+            job: copying,
             stamp: source.stamp,
             message,
         });
     }
 
-    pub(super) fn poll_copy(&mut self, ctx: &egui::Context) {
+    pub(super) fn poll_copy(&mut self) {
         if self.copy.queued && !self.editor.save_waits() {
             self.copy.queued = false;
             self.copy();
         }
-        let Some(copying) = &self.copy.in_progress else {
+        let Some(copying) = &mut self.copy.in_progress else {
             return;
         };
-        copying.pending.wake(ctx);
-        let Some(result) = copying.pending.take() else {
+        let Some(result) = copying.job.poll() else {
             return;
         };
         let copying = self.copy.in_progress.take().expect("checked above");

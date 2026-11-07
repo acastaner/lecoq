@@ -198,8 +198,10 @@ fn with_room_for_every_frame_the_whole_animation_plays() {
 
 #[test]
 fn an_animations_frames_leave_less_room_for_prefetched_siblings() {
-    // Room for the GIF's display decode, its six frames and one 64×48 RGB Sibling, not two.
-    let cap = 7 * FRAME_BYTES + 64 * 48 * 3;
+    // Room for the GIF's display decode, its six frames and one 64×48 Sibling, not two. The
+    // Sibling is cached upload-ready now (#56), so an opaque PNG is premultiplied RGBA (64×48×4),
+    // a third larger than its decoded RGB.
+    let cap = 7 * FRAME_BYTES + 64 * 48 * 4;
     let mut app = TestApp::with_launch(|l| l.cache_cap = cap);
     let gif = six_frame_gif(app.dir.path(), "1.gif");
     for name in ["2.png", "3.png"] {

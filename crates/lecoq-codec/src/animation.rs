@@ -10,7 +10,10 @@ use image::codecs::webp::WebPDecoder;
 use image::metadata::Orientation;
 use image::{AnimationDecoder, ImageDecoder, ImageFormat, ImageReader};
 
-use crate::{DecodeError, Decoded, DisplayImage, Pixels, Size};
+use lecoq_core::{PixelData, Pixels};
+
+use crate::colour::Converter;
+use crate::{DecodeError, Decoded, DisplayImage, Size};
 
 /// Delays at or under this are played as [`SHORT_DELAY_SUBSTITUTE`], as browsers do: many GIFs
 /// say 0 or 10 ms and were made to be shown at 100 ms.
@@ -27,7 +30,9 @@ pub struct Frame {
 pub struct Frames {
     inner: image::Frames<'static>,
     orientation: Orientation,
-    icc: Option<Vec<u8>>,
+    /// The colour conversion for this animation, prepared once from its profile and applied to
+    /// every frame (#60). The iterator owns no raw profile bytes.
+    converter: Converter,
     max: Size,
 }
 
@@ -47,15 +52,22 @@ impl Iterator for Frames {
             delay
         };
         let buffer = frame.into_buffer();
+        let (width, height) = (buffer.width(), buffer.height());
         let decoded = Decoded {
-            stored: Size::new(buffer.width(), buffer.height()),
-            pixels: Pixels::Rgba(buffer.into_raw()),
+            stored: Size::new(width, height),
+            pixels: Pixels {
+                width,
+                height,
+                data: PixelData::Rgba(buffer.into_raw()),
+            },
             orientation: self.orientation,
-            icc: self.icc.clone(),
+            // The converter carries the colour conversion; a frame needs no profile bytes of its
+            // own, so none is cloned here (#60).
+            icc: None,
             may_animate: true,
         };
         Some(Ok(Frame {
-            image: decoded.into_display(self.max),
+            image: decoded.into_display_with(self.max, &self.converter),
             delay,
         }))
     }
@@ -91,7 +103,8 @@ pub fn frames(path: &Path, max: Size) -> Result<Option<Frames>, DecodeError> {
     Ok(Some(Frames {
         inner,
         orientation,
-        icc,
+        // Parse the profile and build the transform once, for the whole animation (#60).
+        converter: Converter::prepare(icc.as_deref()),
         max,
     }))
 }

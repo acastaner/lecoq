@@ -10,9 +10,10 @@ use std::sync::Arc;
 
 use lecoq_codec::{SaveFormat, Size};
 use lecoq_core::{Annotation, AnnotationId, Document, PixelData, Pixels, Point, Rect, Shape};
-use lecoq_render::{Composite, Renderer, Source, SourcePixels, View};
+use lecoq_render::{Composite, Renderer, Source, View};
 
-use crate::decode::{Pending, decode_full};
+use crate::app::job::{Job, Waker};
+use crate::decode::decode_full;
 use crate::strings;
 
 /// What a save or copy Flattens (§7.2): the Document, plus where its full-resolution pixels come
@@ -25,8 +26,8 @@ pub(crate) struct FlattenInput {
     /// The file the Image came from: its pixels (when not yet decoded) and metadata.
     pub source: Option<PathBuf>,
     /// The display-size decode when it is the full resolution: used when the source can't be
-    /// decoded any more (deleted or changed on disk, #21).
-    pub fallback: Option<Arc<egui::ColorImage>>,
+    /// decoded any more (deleted or changed on disk, #21). Already the one pixel type (#64).
+    pub fallback: Option<Arc<Pixels>>,
 }
 
 /// What to save, and where.
@@ -76,14 +77,9 @@ impl From<FlattenError> for String {
     }
 }
 
-pub(crate) type PendingSave = Pending<SaveResult>;
-
-impl PendingSave {
-    /// Start `job` on the worker thread. The pending work's path is the target.
-    pub fn spawn_save(job: SaveJob) -> Self {
-        let target = job.target.clone();
-        Self::spawn_job(target, "worker", move |_| run(job))
-    }
+/// Start `job` on the worker thread (§7.3), waking `waker` when it finishes.
+pub(crate) fn spawn_save(job: SaveJob, waker: Option<Waker>) -> Job<SaveResult> {
+    Job::spawn("worker", waker, move || run(job))
 }
 
 fn run(job: SaveJob) -> SaveResult {
@@ -94,7 +90,8 @@ fn run(job: SaveJob) -> SaveResult {
         .map(lecoq_codec::source_info)
         .unwrap_or_default();
     let (flattened, decoded) = flatten_document(job.input)?;
-    let (pixels, size) = straight(&flattened);
+    let pixels = straight(&flattened);
+    let size = Size::new(pixels.width, pixels.height);
     lecoq_codec::save(
         &job.target,
         &pixels,
@@ -113,18 +110,15 @@ pub(crate) struct CopyJob {
     pub clipboard: Arc<dyn lecoq_platform::Clipboard>,
 }
 
-pub(crate) type PendingCopy = Pending<SaveResult>;
-
-impl PendingCopy {
-    /// Flatten, encode as PNG and put on the clipboard, on the worker thread (§7.3).
-    pub fn spawn_copy(job: CopyJob) -> Self {
-        Self::spawn_job(PathBuf::new(), "worker", move |_| copy(job))
-    }
+/// Flatten, encode as PNG and put on the clipboard, on the worker thread (§7.3), waking `waker`.
+pub(crate) fn spawn_copy(job: CopyJob, waker: Option<Waker>) -> Job<SaveResult> {
+    Job::spawn("worker", waker, move || copy(job))
 }
 
 fn copy(job: CopyJob) -> SaveResult {
     let (flattened, decoded) = flatten_document(job.input)?;
-    let (pixels, size) = straight(&flattened);
+    let pixels = straight(&flattened);
+    let size = Size::new(pixels.width, pixels.height);
     let png = lecoq_codec::encode_png_plain(&pixels, size).map_err(|e| strings::save_reason(&e))?;
     job.clipboard
         .write(vec![lecoq_platform::ClipboardItem::new(
@@ -142,11 +136,12 @@ pub(crate) struct AnnotationsCopyJob {
     pub clipboard: Arc<dyn lecoq_platform::Clipboard>,
 }
 
-impl PendingCopy {
-    /// Serialise the Annotations and render their PNG, on the worker thread (§7.3).
-    pub fn spawn_copy_annotations(job: AnnotationsCopyJob) -> Self {
-        Self::spawn_job(PathBuf::new(), "worker", move |_| copy_annotations(job))
-    }
+/// Serialise the Annotations and render their PNG, on the worker thread (§7.3), waking `waker`.
+pub(crate) fn spawn_copy_annotations(
+    job: AnnotationsCopyJob,
+    waker: Option<Waker>,
+) -> Job<SaveResult> {
+    Job::spawn("worker", waker, move || copy_annotations(job))
 }
 
 /// How far drawing reaches beyond an Annotation's bounds (line, arrowheads, shadow), at most;
@@ -211,7 +206,8 @@ fn annotations_png(doc: &Document, annotations: &[&Annotation]) -> Result<Option
     let Some(trimmed) = trim_transparent(&composite) else {
         return Ok(None);
     };
-    let (pixels, size) = straight(&trimmed);
+    let pixels = straight(&trimmed);
+    let size = Size::new(pixels.width, pixels.height);
     lecoq_codec::encode_png_plain(&pixels, size)
         .map(Some)
         .map_err(|e| strings::save_reason(&e))
@@ -265,7 +261,9 @@ fn flatten_document(input: FlattenInput) -> Result<(Composite, Option<Arc<Pixels
                 .filter(|p| (p.width, p.height) == (doc.width(), doc.height()));
             let full = match (decoded, fallback) {
                 (Some(pixels), _) => Arc::new(pixels),
-                (None, Some(fallback)) => Arc::new(from_color_image(&fallback)),
+                // The fallback is premultiplied display pixels; straighten them back to the
+                // full-resolution layout the Flatten and the encoders expect (#21, #64).
+                (None, Some(fallback)) => Arc::new(fallback.straight()),
                 (None, None) => return Err(FlattenError::FileChangedOrGone),
             };
             (full.clone(), Some(full))
@@ -282,66 +280,20 @@ fn flatten_document(input: FlattenInput) -> Result<(Composite, Option<Arc<Pixels
 fn flatten(doc: &Document, full: &Pixels) -> Composite {
     let source = Source {
         key: 0,
-        width: full.width,
-        height: full.height,
-        pixels: match &full.data {
-            PixelData::Rgb(rgb) => SourcePixels::Rgb(rgb),
-            PixelData::Rgba(rgba) => SourcePixels::Rgba(rgba),
-        },
+        pixels: full,
     };
     Renderer::new().flatten(doc, &source)
 }
 
-/// egui's (premultiplied) pixels as full-resolution Image pixels.
-fn from_color_image(image: &egui::ColorImage) -> Pixels {
-    let [width, height] = image.size;
-    let opaque = image.pixels.iter().all(|p| p.a() == 255);
-    let data = if opaque {
-        PixelData::Rgb(
-            image
-                .pixels
-                .iter()
-                .flat_map(|p| [p.r(), p.g(), p.b()])
-                .collect(),
-        )
-    } else {
-        PixelData::Rgba(
-            image
-                .pixels
-                .iter()
-                .flat_map(|p| p.to_srgba_unmultiplied())
-                .collect(),
-        )
-    };
+/// The composite's premultiplied pixels as the encoders take them (#64): [`Pixels::straight`] gives
+/// RGB when opaque and straight RGBA otherwise, the un-premultiply living next to the pixel type.
+fn straight(composite: &Composite) -> Pixels {
     Pixels {
-        width: width as u32,
-        height: height as u32,
-        data,
+        width: composite.width,
+        height: composite.height,
+        data: PixelData::RgbaPremultiplied(composite.rgba_premultiplied.clone()),
     }
-}
-
-/// The composite (premultiplied RGBA) as the encoders take it: RGB when opaque, straight RGBA
-/// otherwise.
-fn straight(composite: &Composite) -> (lecoq_codec::Pixels, Size) {
-    let size = Size::new(composite.width, composite.height);
-    let premultiplied = &composite.rgba_premultiplied;
-    if premultiplied.chunks_exact(4).all(|px| px[3] == 255) {
-        let rgb = premultiplied
-            .chunks_exact(4)
-            .flat_map(|px| [px[0], px[1], px[2]])
-            .collect();
-        return (lecoq_codec::Pixels::Rgb(rgb), size);
-    }
-    let mut rgba = premultiplied.clone();
-    for px in rgba.chunks_exact_mut(4) {
-        let a = u32::from(px[3]);
-        if a != 0 && a != 255 {
-            for c in &mut px[..3] {
-                *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
-            }
-        }
-    }
-    (lecoq_codec::Pixels::Rgba(rgba), size)
+    .straight()
 }
 
 /// Where Ctrl+S writes without asking: the file itself, when lecoq writes its format (§5.1).

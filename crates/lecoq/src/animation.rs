@@ -27,7 +27,7 @@ use lecoq_codec::Size;
 const MAX_CATCH_UP: f64 = 1.0;
 
 enum Message {
-    Frame(Arc<egui::ColorImage>, Duration),
+    Frame(Arc<lecoq_core::Pixels>, Duration),
     /// No more frames: the end of the file, an error, or the budget.
     Done,
 }
@@ -36,7 +36,7 @@ enum Message {
 pub struct Animation {
     rx: mpsc::Receiver<Message>,
     cancel: Arc<AtomicBool>,
-    frames: Vec<(Arc<egui::ColorImage>, Duration)>,
+    frames: Vec<(Arc<lecoq_core::Pixels>, Duration)>,
     /// The bytes of `frames`' pixels.
     bytes: usize,
     decoding: bool,
@@ -98,7 +98,7 @@ impl Animation {
     }
 
     /// Frame 1's pixels, once decoded.
-    pub fn first_frame(&self) -> Option<&Arc<egui::ColorImage>> {
+    pub fn first_frame(&self) -> Option<&Arc<lecoq_core::Pixels>> {
         self.frames.first().map(|(pixels, _)| pixels)
     }
 
@@ -118,7 +118,7 @@ impl Animation {
     /// Take in the frames decoded since the last call and move on to the frame due at `now` (egui
     /// time, seconds). Returns the frame to put on screen when it changed, and asks `ctx` for a
     /// repaint when the next one is due.
-    pub fn tick(&mut self, now: f64, ctx: &egui::Context) -> Option<Arc<egui::ColorImage>> {
+    pub fn tick(&mut self, now: f64, ctx: &egui::Context) -> Option<Arc<lecoq_core::Pixels>> {
         self.receive();
         if self.frames.is_empty() {
             return None;
@@ -181,20 +181,18 @@ fn decode(
         let Ok(frame) = frame else {
             return;
         };
-        let pixels = crate::app::color_image(&frame.image);
+        // The frame's pixels are already upload-ready (premultiplied on the decode side, #56); the
+        // animation holds and uploads them without converting on the UI thread.
+        let pixels = Arc::clone(&frame.image.pixels);
         bytes += frame_bytes(&pixels);
-        if bytes > budget
-            || tx
-                .send(Message::Frame(Arc::new(pixels), frame.delay))
-                .is_err()
-        {
+        if bytes > budget || tx.send(Message::Frame(pixels, frame.delay)).is_err() {
             return;
         }
         ctx.request_repaint();
     }
 }
 
-/// The bytes of pixels a frame holds (RGBA).
-pub fn frame_bytes(pixels: &egui::ColorImage) -> usize {
-    pixels.pixels.len() * 4
+/// The bytes of pixels a frame holds (premultiplied RGBA).
+pub fn frame_bytes(pixels: &lecoq_core::Pixels) -> usize {
+    pixels.byte_len()
 }

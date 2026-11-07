@@ -4,13 +4,14 @@
 //! the UI side that drives it and owns [`SaveState`].
 
 use std::path::PathBuf;
-use std::sync::mpsc;
 
 use lecoq_codec::SaveFormat;
 
-use super::{LecoqApp, Proceed, dialog_answer, file_name, same_file};
+use super::dialog::DialogSlot;
+use super::job::{self, Job};
+use super::{LecoqApp, Proceed, file_name, same_file};
 use crate::editor::SaveStamp;
-use crate::save::{FlattenInput, PendingSave, SaveJob};
+use crate::save::{FlattenInput, SaveJob, SaveResult};
 use crate::strings;
 use crate::ui::overwrite_dialog;
 
@@ -20,7 +21,7 @@ use crate::ui::overwrite_dialog;
 #[derive(Default)]
 pub(super) struct SaveState {
     /// The Save As dialog while it is up (#34).
-    pub(super) dialog: Option<mpsc::Receiver<Option<PathBuf>>>,
+    pub(super) dialog: Option<DialogSlot>,
     pub(super) saving: Option<Saving>,
     /// A save asked for while the Document waits for its pixels (a queued crop): started then.
     pub(super) queued: Option<(PathBuf, SaveFormat)>,
@@ -32,8 +33,17 @@ pub(super) struct SaveState {
 
 /// A save running on the worker thread (#34).
 pub(super) struct Saving {
-    pending: PendingSave,
+    job: Job<SaveResult>,
     stamp: SaveStamp,
+    /// The file the save writes: the "Can't save" name and the follow-up (#21) read it.
+    target: PathBuf,
+}
+
+impl Saving {
+    /// Is the worker-thread save still outstanding?
+    pub(super) fn is_running(&self) -> bool {
+        self.job.is_running()
+    }
 }
 
 /// "Overwrite animated image?" while it is up (#38, §6.4), and the save it holds.
@@ -69,21 +79,23 @@ impl LecoqApp {
             return;
         };
         let suggested = crate::save::suggestion(shown.path.as_deref());
-        let (tx, rx) = mpsc::channel();
-        self.save.dialog = Some(rx);
         let ctx = self.ctx.clone();
-        self.platform.dialogs.save_image(
-            strings::SAVE_AS_DIALOG_TITLE,
-            &suggested,
-            Box::new(move |chosen| {
-                let _ = tx.send(chosen);
-                ctx.request_repaint();
-            }),
-        );
+        self.save.dialog = Some(DialogSlot::open(&ctx, |reply| {
+            self.platform
+                .dialogs
+                .save_image(strings::SAVE_AS_DIALOG_TITLE, &suggested, reply);
+        }));
     }
 
     pub(super) fn poll_save_dialog(&mut self) {
-        if let Some(Some(chosen)) = dialog_answer(&mut self.save.dialog) {
+        let Some(slot) = &self.save.dialog else {
+            return;
+        };
+        let Some(answer) = slot.answer() else {
+            return;
+        };
+        self.save.dialog = None;
+        if let Some(chosen) = answer {
             let (target, format) = crate::save::chosen_target(chosen);
             self.save_to(target, format);
         }
@@ -142,21 +154,24 @@ impl LecoqApp {
         let Some(source) = self.editor.save_source() else {
             return;
         };
-        let job = SaveJob {
-            input: FlattenInput {
-                doc: source.doc,
-                source: source.path,
-                fallback: self.full_size_display_pixels(),
+        let saved_target = target.clone();
+        let saving = crate::save::spawn_save(
+            SaveJob {
+                input: FlattenInput {
+                    doc: source.doc,
+                    source: source.path,
+                    fallback: self.full_size_display_pixels(),
+                },
+                target,
+                format,
+                jpeg_quality: self.config.jpeg_quality,
             },
-            target,
-            format,
-            jpeg_quality: self.config.jpeg_quality,
-        };
-        let pending = PendingSave::spawn_save(job);
-        pending.wake(&self.ctx);
+            Some(job::waker(&self.ctx)),
+        );
         self.save.saving = Some(Saving {
-            pending,
+            job: saving,
             stamp: source.stamp,
+            target: saved_target,
         });
     }
 
@@ -165,15 +180,14 @@ impl LecoqApp {
             let (target, format) = self.save.queued.take().expect("checked above");
             self.write_to(target, format);
         }
-        let Some(saving) = &self.save.saving else {
+        let Some(saving) = &mut self.save.saving else {
             return;
         };
-        saving.pending.wake(ctx);
-        let Some(result) = saving.pending.take() else {
+        let Some(result) = saving.job.poll() else {
             return;
         };
         let saving = self.save.saving.take().expect("checked above");
-        let target = saving.pending.path().to_owned();
+        let target = saving.target;
         match result {
             Ok(saved) => {
                 self.editor.saved(saving.stamp, &target, saved.decoded);

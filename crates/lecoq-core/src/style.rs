@@ -94,6 +94,22 @@ mod fill_serde {
     }
 }
 
+/// The font family in `config.toml` (§8.3): the same TOML string as a plain `String` would write,
+/// read back into the `Arc<str>` the [`Style`] holds.
+mod font_serde {
+    use std::sync::Arc;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(font: &Arc<str>, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(font)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<str>, D::Error> {
+        Ok(Arc::from(String::deserialize(d)?.as_str()))
+    }
+}
+
 /// Every style property an Annotation can have. Types ignore the ones they don't list.
 ///
 /// Each tool's style is saved as `tools.<tool>` in `config.toml` (§8.3) through serde: a new field
@@ -111,8 +127,10 @@ pub struct Style {
     pub shadow: bool,
     /// Step counter diameter in Image pixels.
     pub counter_size: f32,
-    /// The text font's family name (§4.4).
-    pub font: String,
+    /// The text font's family name (§4.4). An `Arc<str>` so cloning a `Style` (per pointer event,
+    /// per frame, once per Annotation in every History snapshot) allocates nothing.
+    #[serde(with = "font_serde")]
+    pub font: std::sync::Arc<str>,
     /// The text size in Image pixels.
     pub font_size: f32,
     /// Which ends of an arrow carry a head.
@@ -217,7 +235,7 @@ impl Default for Style {
             thickness: 3.0,
             shadow: true,
             counter_size: 30.0,
-            font: DEFAULT_FONT.to_owned(),
+            font: std::sync::Arc::from(DEFAULT_FONT),
             font_size: 20.0,
             arrowheads: Arrowheads::End,
             border: None,
@@ -260,7 +278,7 @@ pub enum Property {
     Shadow(bool),
     CounterSize(f32),
     TextColour(Rgba),
-    Font(String),
+    Font(std::sync::Arc<str>),
     FontSize(f32),
     Arrowheads(Arrowheads),
     /// `None` is no border.
@@ -355,7 +373,7 @@ impl Style {
         }
         self.set(Property::Magnification(self.magnification));
         if self.font.trim().is_empty() {
-            self.font = DEFAULT_FONT.to_owned();
+            self.font = std::sync::Arc::from(DEFAULT_FONT);
         }
         self
     }

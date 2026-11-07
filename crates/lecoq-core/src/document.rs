@@ -35,7 +35,10 @@ pub enum Restack {
     Down,
 }
 
-/// Full-resolution Image pixels: 8-bit sRGB, tightly packed, row-major.
+/// Image pixels: 8-bit sRGB, tightly packed, row-major. The one pixel buffer the codec decodes
+/// into, the render crate draws from, and the app wraps for egui (#64). Full-resolution pixels are
+/// straight ([`PixelData::Rgb`] or [`PixelData::Rgba`]); display-size pixels are premultiplied
+/// ([`PixelData::RgbaPremultiplied`]), ready for egui and the screen composite.
 #[derive(Clone)]
 pub struct Pixels {
     pub width: u32,
@@ -43,13 +46,108 @@ pub struct Pixels {
     pub data: PixelData,
 }
 
-/// The channels of [`Pixels`].
+/// The channel layout of [`Pixels`].
 #[derive(Clone)]
 pub enum PixelData {
     /// Opaque images.
     Rgb(Vec<u8>),
-    /// Images with an alpha channel, not premultiplied.
+    /// Images with an alpha channel, not premultiplied (straight): what the encoders take.
     Rgba(Vec<u8>),
+    /// RGBA with premultiplied alpha, the layout egui and the Skia screen composite keep (§7.2).
+    RgbaPremultiplied(Vec<u8>),
+}
+
+impl PixelData {
+    /// `data` wrapped in the same layout variant as `self`: how [`Pixels::crop`] and the rotate/flip
+    /// remap keep an operation's output in the input's layout.
+    pub(crate) fn same_layout(&self, data: Vec<u8>) -> PixelData {
+        match self {
+            PixelData::Rgb(_) => PixelData::Rgb(data),
+            PixelData::Rgba(_) => PixelData::Rgba(data),
+            PixelData::RgbaPremultiplied(_) => PixelData::RgbaPremultiplied(data),
+        }
+    }
+}
+
+impl Pixels {
+    /// The same pixels with premultiplied alpha: the display-size, upload-ready layout (#64, §7.2).
+    /// RGB gains an opaque alpha; straight RGBA is premultiplied exactly the way egui premultiplies
+    /// a `ColorImage` (`from_rgba_unmultiplied`), so the display texture and the Skia source agree
+    /// to the byte. Already-premultiplied pixels are returned unchanged.
+    /// See also `lecoq-render`'s `to_skia`, the other RGB→opaque-RGBA expansion; keep in sync.
+    pub fn premultiplied(&self) -> Pixels {
+        let data = match &self.data {
+            PixelData::Rgb(rgb) => PixelData::RgbaPremultiplied(
+                rgb.chunks_exact(3)
+                    .flat_map(|px| [px[0], px[1], px[2], 255])
+                    .collect(),
+            ),
+            PixelData::Rgba(rgba) => PixelData::RgbaPremultiplied(
+                rgba.chunks_exact(4)
+                    .flat_map(|px| {
+                        let a = px[3];
+                        match a {
+                            0 => [0, 0, 0, 0],
+                            255 => [px[0], px[1], px[2], 255],
+                            a => [
+                                mul_frac_round(px[0], a),
+                                mul_frac_round(px[1], a),
+                                mul_frac_round(px[2], a),
+                                a,
+                            ],
+                        }
+                    })
+                    .collect(),
+            ),
+            PixelData::RgbaPremultiplied(_) => return self.clone(),
+        };
+        Pixels {
+            width: self.width,
+            height: self.height,
+            data,
+        }
+    }
+
+    /// The same pixels with straight (non-premultiplied) alpha, what the encoders take (§5.3):
+    /// premultiplied pixels are un-premultiplied, becoming [`PixelData::Rgb`] when every pixel is
+    /// opaque and straight [`PixelData::Rgba`] otherwise. Straight pixels are returned unchanged.
+    pub fn straight(&self) -> Pixels {
+        let premultiplied = match &self.data {
+            PixelData::RgbaPremultiplied(data) => data,
+            PixelData::Rgb(_) | PixelData::Rgba(_) => return self.clone(),
+        };
+        let data = if premultiplied.chunks_exact(4).all(|px| px[3] == 255) {
+            PixelData::Rgb(
+                premultiplied
+                    .chunks_exact(4)
+                    .flat_map(|px| [px[0], px[1], px[2]])
+                    .collect(),
+            )
+        } else {
+            let mut rgba = premultiplied.clone();
+            for px in rgba.chunks_exact_mut(4) {
+                let a = u32::from(px[3]);
+                if a != 0 && a != 255 {
+                    for c in &mut px[..3] {
+                        *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
+                    }
+                }
+            }
+            PixelData::Rgba(rgba)
+        };
+        Pixels {
+            width: self.width,
+            height: self.height,
+            data,
+        }
+    }
+}
+
+/// `val * (frac / 255)`, rounded, with no division: egui's own premultiply (`ecolor`'s
+/// `mul_frac_round`), replicated here so premultiplied Image pixels match egui's to the byte.
+fn mul_frac_round(val: u8, frac: u8) -> u8 {
+    let p = (val as u16) * (frac as u16) + 128;
+    ((p + (p >> 8)) >> 8) as u8
 }
 
 impl std::fmt::Debug for Pixels {
@@ -76,6 +174,10 @@ pub struct Document {
     next_id: u64,
     /// The state when the open gesture began.
     gesture: Option<Snapshot>,
+    /// The current committed Annotations behind a shared pointer, kept equal to `annotations`
+    /// whenever no gesture is open. A step's `before` reuses this `Arc`, and its `after` becomes
+    /// the next step's `before`, so consecutive steps share one copy (§4.8, issue #66).
+    snapshot_annotations: Arc<[Annotation]>,
     /// Bumped on every visible change, so renderers know when to redraw.
     revision: u64,
 }
@@ -95,6 +197,7 @@ impl Document {
             history: History::new(),
             next_id: 1,
             gesture: None,
+            snapshot_annotations: Arc::from([]),
             revision: 0,
         }
     }
@@ -165,15 +268,7 @@ impl Document {
             return false;
         };
         let pixels = full.rotate90(clockwise);
-        let (width, height) = (self.width as f32, self.height as f32);
-        self.image_operation(
-            pixels,
-            ImageTransform::Rotate90 {
-                clockwise,
-                width,
-                height,
-            },
-        );
+        self.image_operation(pixels, ImageTransform::Rotate90 { clockwise });
         true
     }
 
@@ -184,15 +279,7 @@ impl Document {
             return false;
         };
         let pixels = full.flip(horizontal);
-        let (width, height) = (self.width as f32, self.height as f32);
-        self.image_operation(
-            pixels,
-            ImageTransform::Flip {
-                horizontal,
-                width,
-                height,
-            },
-        );
+        self.image_operation(pixels, ImageTransform::Flip { horizontal });
         true
     }
 
@@ -225,7 +312,13 @@ impl Document {
     /// that stores the pixels and Annotations from before; the History's pixel cap is enforced.
     pub fn image_operation(&mut self, pixels: Pixels, transform: ImageTransform) {
         assert!(self.gesture.is_none(), "image operation inside a gesture");
-        let before = self.snapshot_with_image();
+        let before = Snapshot {
+            image: self.image_state(),
+            ..self.baseline_snapshot()
+        };
+        // `transform`'s pixel map needs the Image size from before the operation (rotate and flip
+        // place the old edges); capture it before the new pixels overwrite the size.
+        let old_size = Vector::new(self.width as f32, self.height as f32);
         self.width = pixels.width;
         self.height = pixels.height;
         self.full_resolution = Some(Arc::new(pixels));
@@ -233,7 +326,7 @@ impl Document {
         self.next_image_generation += 1;
         let bounds = self.bounds();
         for a in &mut self.annotations {
-            a.image_transform(&transform);
+            a.image_transform(&transform, old_size);
         }
         self.annotations
             .retain(|a| a.extent().intersect(&bounds).is_some());
@@ -241,7 +334,10 @@ impl Document {
         self.selection
             .retain(|id| annotations.iter().any(|a| a.id == *id));
         self.revision += 1;
-        let after = self.snapshot_with_image();
+        let after = Snapshot {
+            image: self.image_state(),
+            ..self.snapshot_after()
+        };
         self.history.push(Step {
             kind: StepKind::ImageOperation,
             before,
@@ -345,16 +441,16 @@ impl Document {
     /// Start a gesture: the edits until [`Self::commit_gesture`] become one History step.
     pub fn begin_gesture(&mut self) {
         assert!(self.gesture.is_none(), "a gesture is already open");
-        self.gesture = Some(self.snapshot());
+        self.gesture = Some(self.baseline_snapshot());
     }
 
     /// End the gesture. Records a step if anything changed; returns whether it did.
     pub fn commit_gesture(&mut self) -> bool {
         let before = self.gesture.take().expect("no open gesture");
-        let after = self.snapshot();
-        if before.annotations == after.annotations {
+        if *before.annotations == *self.annotations {
             return false;
         }
+        let after = self.snapshot_after();
         self.history.push(Step {
             kind: StepKind::Gesture,
             before,
@@ -542,7 +638,7 @@ impl Document {
             kind: property.kind(),
             targets: self.selection.clone(),
         };
-        let before = self.snapshot();
+        let before = self.baseline_snapshot();
         let selection = self.selection.clone();
         for a in &mut self.annotations {
             if selection.contains(&a.id) {
@@ -551,10 +647,10 @@ impl Document {
             }
         }
         self.revision += 1;
-        let after = self.snapshot();
-        if before.annotations == after.annotations {
+        if *before.annotations == *self.annotations {
             return true;
         }
+        let after = self.snapshot_after();
         if merge && let Some(last) = self.history.last_mut().filter(|s| s.kind == kind) {
             last.after = after;
             return true;
@@ -619,33 +715,46 @@ impl Document {
         self.history.mark_saved();
     }
 
-    fn snapshot(&self) -> Snapshot {
+    /// A step's `before`: reuses the shared baseline `Arc` for the Annotations (no copy). Valid
+    /// only at a committed boundary, where the baseline equals the working `annotations` — every
+    /// caller takes it before editing.
+    fn baseline_snapshot(&self) -> Snapshot {
         Snapshot {
-            annotations: self.annotations.clone(),
+            annotations: Arc::clone(&self.snapshot_annotations),
             selection: self.selection.clone(),
             image: None,
         }
     }
 
-    /// A snapshot that also holds the Image, for Image-operation steps.
-    fn snapshot_with_image(&self) -> Snapshot {
+    /// A step's `after`: a fresh shared copy of the current Annotations, which also becomes the new
+    /// baseline so the next step's `before` shares this very `Arc`.
+    fn snapshot_after(&mut self) -> Snapshot {
+        let annotations: Arc<[Annotation]> = Arc::from(self.annotations.as_slice());
+        self.snapshot_annotations = Arc::clone(&annotations);
+        Snapshot {
+            annotations,
+            selection: self.selection.clone(),
+            image: None,
+        }
+    }
+
+    /// The Image as the current Document holds it, for an Image-operation step's snapshots.
+    fn image_state(&self) -> Option<ImageState> {
         let pixels = self
             .full_resolution
             .clone()
             .expect("Image operations need the full-resolution pixels");
-        Snapshot {
-            image: Some(ImageState {
-                width: self.width,
-                height: self.height,
-                pixels,
-                generation: self.image_generation,
-            }),
-            ..self.snapshot()
-        }
+        Some(ImageState {
+            width: self.width,
+            height: self.height,
+            pixels,
+            generation: self.image_generation,
+        })
     }
 
     fn restore(&mut self, s: &Snapshot) {
-        self.annotations = s.annotations.clone();
+        self.annotations = s.annotations.to_vec();
+        self.snapshot_annotations = Arc::clone(&s.annotations);
         self.selection = s.selection.clone();
         if let Some(image) = &s.image {
             self.width = image.width;
@@ -661,5 +770,200 @@ impl Document {
             self.gesture.is_some(),
             "Document edits must be inside a step"
         );
+    }
+}
+
+#[cfg(test)]
+mod pixel_layout_tests {
+    use super::{PixelData, Pixels};
+
+    fn rgb(data: Vec<u8>) -> Pixels {
+        Pixels {
+            width: (data.len() / 3) as u32,
+            height: 1,
+            data: PixelData::Rgb(data),
+        }
+    }
+
+    fn rgba(data: Vec<u8>) -> Pixels {
+        Pixels {
+            width: (data.len() / 4) as u32,
+            height: 1,
+            data: PixelData::Rgba(data),
+        }
+    }
+
+    fn bytes(p: &Pixels) -> &[u8] {
+        match &p.data {
+            PixelData::Rgb(d) | PixelData::Rgba(d) | PixelData::RgbaPremultiplied(d) => d,
+        }
+    }
+
+    #[test]
+    fn premultiply_rgb_adds_opaque_alpha() {
+        let p = rgb(vec![200, 100, 50]).premultiplied();
+        assert!(matches!(p.data, PixelData::RgbaPremultiplied(_)));
+        assert_eq!(bytes(&p), &[200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn premultiply_straight_rgba_matches_egui_at_each_alpha() {
+        // One pixel (200, 100, 50) at alpha 0, 1, 254, 255; expected values hand-computed from
+        // egui's `from_rgba_unmultiplied` (opaque and transparent fast paths, else mul_frac_round).
+        let p = rgba(vec![
+            200, 100, 50, 0, // transparent -> cleared
+            200, 100, 50, 1, // barely visible
+            200, 100, 50, 254, // nearly opaque
+            200, 100, 50, 255, // opaque
+        ])
+        .premultiplied();
+        assert_eq!(
+            bytes(&p),
+            &[
+                0, 0, 0, 0, //
+                1, 0, 0, 1, //
+                199, 100, 50, 254, //
+                200, 100, 50, 255,
+            ]
+        );
+    }
+
+    #[test]
+    fn straight_of_fully_opaque_premultiplied_drops_alpha() {
+        let premult = Pixels {
+            width: 2,
+            height: 1,
+            data: PixelData::RgbaPremultiplied(vec![10, 20, 30, 255, 40, 50, 60, 255]),
+        };
+        let s = premult.straight();
+        assert!(matches!(s.data, PixelData::Rgb(_)));
+        assert_eq!(bytes(&s), &[10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn straight_of_partly_transparent_premultiplied_un_premultiplies() {
+        let premult = Pixels {
+            width: 1,
+            height: 1,
+            data: PixelData::RgbaPremultiplied(vec![199, 100, 50, 254]),
+        };
+        let s = premult.straight();
+        assert!(matches!(s.data, PixelData::Rgba(_)));
+        // (c * 255 + a/2) / a, the encoders' un-premultiply.
+        assert_eq!(bytes(&s), &[200, 100, 50, 254]);
+    }
+
+    #[test]
+    fn round_trip_is_exact_near_opaque_and_documented_at_the_edges() {
+        let original = rgba(vec![
+            200, 100, 50, 0, //
+            200, 100, 50, 1, //
+            200, 100, 50, 254, //
+            200, 100, 50, 255,
+        ]);
+        let back = original.premultiplied().straight();
+        // Not fully opaque, so the un-premultiply keeps straight RGBA.
+        assert_eq!(
+            bytes(&back),
+            &[
+                0, 0, 0, 0, // alpha 0 loses the colour entirely
+                255, 0, 0, 1, // alpha 1 can't recover the colour (1 step of precision)
+                200, 100, 50, 254, // alpha 254 round-trips exactly
+                200, 100, 50, 255, // alpha 255 round-trips exactly
+            ]
+        );
+    }
+
+    #[test]
+    fn premultiplied_already_premultiplied_is_unchanged() {
+        let premult = Pixels {
+            width: 1,
+            height: 1,
+            data: PixelData::RgbaPremultiplied(vec![1, 2, 3, 4]),
+        };
+        assert_eq!(bytes(&premult.premultiplied()), &[1, 2, 3, 4]);
+    }
+}
+
+#[cfg(test)]
+mod history_sharing_tests {
+    use std::sync::Arc;
+
+    use super::{Document, PixelData, Pixels};
+    use crate::annotation::Rectangle;
+    use crate::geometry::{Point, Rect};
+    use crate::image_op::ImageTransform;
+    use crate::style::Style;
+
+    fn add_rect(doc: &mut Document, x: f32) {
+        doc.step(|d| {
+            d.add(
+                Rectangle::new(Rect::from_min_size(Point::new(x, x), 10.0, 10.0)),
+                Style::default(),
+            );
+        });
+    }
+
+    fn image(w: u32, h: u32) -> Pixels {
+        Pixels {
+            width: w,
+            height: h,
+            data: PixelData::Rgb(vec![0u8; (w * h * 3) as usize]),
+        }
+    }
+
+    #[test]
+    fn undo_restores_the_exact_annotations_after_several_steps() {
+        let mut doc = Document::new(100, 100);
+        add_rect(&mut doc, 1.0);
+        let after_one = doc.annotations().to_vec();
+        add_rect(&mut doc, 2.0);
+        add_rect(&mut doc, 3.0);
+        let after_three = doc.annotations().to_vec();
+
+        assert!(doc.undo());
+        assert!(doc.undo());
+        assert_eq!(doc.annotations(), after_one.as_slice());
+
+        assert!(doc.redo());
+        assert!(doc.redo());
+        assert_eq!(doc.annotations(), after_three.as_slice());
+    }
+
+    #[test]
+    fn consecutive_steps_share_one_annotation_copy() {
+        let mut doc = Document::new(100, 100);
+        add_rect(&mut doc, 1.0);
+        add_rect(&mut doc, 2.0);
+        add_rect(&mut doc, 3.0);
+
+        let steps = doc.history.steps_for_test();
+        assert_eq!(steps.len(), 3);
+        for pair in steps.windows(2) {
+            assert!(
+                Arc::ptr_eq(&pair[0].after.annotations, &pair[1].before.annotations),
+                "the after of one step must be the same Arc as the before of the next",
+            );
+        }
+    }
+
+    #[test]
+    fn pixel_cap_drops_the_oldest_image_operation_steps() {
+        // Each operation stores one 100×100 RGB buffer (30 000 bytes). A 50 000-byte cap keeps the
+        // pixels of one step, so the oldest steps are dropped as new ones arrive.
+        let mut doc = Document::new(100, 100);
+        doc.set_full_resolution(Arc::new(image(100, 100)));
+        doc.set_history_pixel_cap(50_000);
+
+        for _ in 0..4 {
+            doc.image_operation(image(100, 100), ImageTransform::Flip { horizontal: true });
+        }
+
+        // The oldest Image-operation steps were dropped to stay under the cap; undo still works on
+        // what remains and never panics.
+        assert!(doc.undo_len() < 4, "the cap must drop the oldest steps");
+        while doc.can_undo() {
+            assert!(doc.undo());
+        }
     }
 }

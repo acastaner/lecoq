@@ -36,7 +36,9 @@ fn rgb_at(pixels: &Pixels, x: u32, y: u32) -> [u8; 3] {
     let i = (y * pixels.width + x) as usize;
     match &pixels.data {
         PixelData::Rgb(d) => [d[i * 3], d[i * 3 + 1], d[i * 3 + 2]],
-        PixelData::Rgba(d) => [d[i * 4], d[i * 4 + 1], d[i * 4 + 2]],
+        PixelData::Rgba(d) | PixelData::RgbaPremultiplied(d) => {
+            [d[i * 4], d[i * 4 + 1], d[i * 4 + 2]]
+        }
     }
 }
 

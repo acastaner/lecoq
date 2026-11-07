@@ -15,7 +15,7 @@ use skia_safe as sk;
 pub fn resample(pixels: &Pixels, width: u32, height: u32) -> Pixels {
     assert!(width > 0 && height > 0, "resample to an empty size");
     let alpha = matches!(pixels.data, PixelData::Rgba(_));
-    let mut image = to_image(pixels);
+    let mut image = crate::to_skia(pixels);
     // Mipmap levels: halve each axis while the result stays at or above the target.
     loop {
         let w = if image.width() as u32 / 2 >= width {
@@ -77,25 +77,4 @@ fn scale(
     };
     assert!(ok, "Skia couldn't scale the Image");
     (info, data)
-}
-
-fn to_image(pixels: &Pixels) -> sk::Image {
-    let (data, alpha) = match &pixels.data {
-        PixelData::Rgb(rgb) => {
-            let mut rgba = Vec::with_capacity(pixels.width as usize * pixels.height as usize * 4);
-            for px in rgb.chunks_exact(3) {
-                rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
-            }
-            (sk::Data::new_copy(&rgba), sk::AlphaType::Opaque)
-        }
-        PixelData::Rgba(rgba) => (sk::Data::new_copy(rgba), sk::AlphaType::Unpremul),
-    };
-    let info = sk::ImageInfo::new(
-        (pixels.width as i32, pixels.height as i32),
-        sk::ColorType::RGBA8888,
-        alpha,
-        None,
-    );
-    sk::images::raster_from_data(&info, data, pixels.width as usize * 4)
-        .expect("a Skia image from the Image pixels")
 }
