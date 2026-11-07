@@ -7,6 +7,7 @@
 mod copy;
 pub(crate) mod dialog;
 pub(crate) mod job;
+mod modal;
 mod save;
 
 use std::path::{Path, PathBuf};
@@ -25,6 +26,7 @@ use crate::animation::Animation;
 use crate::app::copy::CopyState;
 use crate::app::dialog::DialogSlot;
 use crate::app::job::Job;
+use crate::app::modal::Modal;
 use crate::app::save::SaveState;
 use crate::config_save::ConfigSaver;
 use crate::decode::{self, DecodeResult};
@@ -34,11 +36,8 @@ use crate::paste::{Destination, Incoming, PendingIncoming};
 use crate::siblings::{Jump, Navigation, Position, Step};
 use crate::strings;
 use crate::tools::ToolId;
-use crate::ui::help_dialog::{self, HelpDialog};
-use crate::ui::resize_dialog::{self, ResizeDialog};
-use crate::ui::{
-    canvas, file_op_warning, menu_bar, property_bar, status_bar, tool_strip, unsaved_dialog,
-};
+use crate::ui::help_dialog::HelpDialog;
+use crate::ui::{canvas, menu_bar, property_bar, status_bar, tool_strip};
 use crate::view::{View, ZOOM_STEP, Zoom};
 
 /// The largest Image whose full-resolution pixels are decoded (§4.7). Larger ones are view-only and
@@ -239,12 +238,6 @@ enum FolderOp {
     Move,
 }
 
-/// The unsaved-changes prompt while it is up.
-struct UnsavedPrompt {
-    file_name: String,
-    then: Proceed,
-}
-
 /// The F11 fullscreen state (§2): what's wanted, and what the window has been told and has
 /// reported, which [`LecoqApp::sync_fullscreen`] reconciles.
 #[derive(Default)]
@@ -300,14 +293,11 @@ pub struct LecoqApp {
     /// The save/export flow (#34, #35, #38): the Save As dialog, a running save, a queued save,
     /// the overwrite prompt and the post-save action. See [`save`].
     save: SaveState,
-    /// "Save changes?" while it is up (#35).
-    unsaved_prompt: Option<UnsavedPrompt>,
+    /// The one modal dialog up at a time (§6.4): the unsaved-changes prompt, the Resize dialog, the
+    /// overwrite prompt, the Help dialogs and the Copy to / Move to warning. See [`modal`].
+    modal: Option<Modal>,
     /// The window is closing: a close request was let through, or sent after the prompt.
     closing: bool,
-    /// The Resize dialog while it is up (modal, §6.4).
-    resize_dialog: Option<ResizeDialog>,
-    /// Help › Keyboard shortcuts or About, while it is up.
-    help_dialog: Option<HelpDialog>,
     /// A path another lecoq process handed over (§8.4), waiting for a modal dialog to close.
     handed_over: Option<PathBuf>,
     /// The clipboard-copy flow (§6.2): a running copy and a queued copy. See [`copy`].
@@ -321,9 +311,6 @@ pub struct LecoqApp {
     last_target: Option<PathBuf>,
     /// The right-click Context menu while it is open, anchored at where it opened (ADR 0008).
     context_menu: Option<egui::Pos2>,
-    /// The Copy to / Move to warning modal while it is up (ADR 0009): the outcome-specific message
-    /// to show. Set for every outcome that did not place the file; successes keep the status bar.
-    file_op_warning: Option<String>,
     /// The status bar's formatted position and zoom labels, cached so they are re-rendered only
     /// when the value behind them changes, not allocated every frame (#66).
     status_labels: StatusLabels,
@@ -384,17 +371,14 @@ impl LecoqApp {
             bench_nav: crate::bench::NavBench::from_env(),
             editor,
             save: SaveState::default(),
-            unsaved_prompt: None,
+            modal: None,
             closing: false,
-            resize_dialog: None,
-            help_dialog: None,
             handed_over: None,
             copy: CopyState::default(),
             incoming: None,
             folder_dialog: None,
             last_target,
             context_menu: None,
-            file_op_warning: None,
             status_labels: StatusLabels::default(),
         };
         if from_clipboard {
@@ -462,8 +446,8 @@ impl LecoqApp {
                     self.trash_file();
                 }
             }
-            Command::ShowShortcuts => self.help_dialog = Some(HelpDialog::Shortcuts),
-            Command::ShowAbout => self.help_dialog = Some(HelpDialog::About),
+            Command::ShowShortcuts => self.open_help_dialog(HelpDialog::Shortcuts),
+            Command::ShowAbout => self.open_help_dialog(HelpDialog::About),
             Command::Resize { width, height } => {
                 self.editor
                     .image_operation(ImageOp::Resize { width, height });
@@ -527,71 +511,6 @@ impl LecoqApp {
                 .map(|d| Size::new(d.width(), d.height()))
                 .unwrap_or(shown.original_size),
         )
-    }
-
-    /// Is the Resize dialog up?
-    pub fn is_resize_dialog_open(&self) -> bool {
-        self.resize_dialog.is_some()
-    }
-
-    /// Image › Resize…: open the dialog on the Image's current size (§6.4). Starts the
-    /// full-resolution decode meanwhile (§4.7: it starts with the first Image operation).
-    fn show_resize_dialog(&mut self) {
-        if !self.editor.can_edit() || self.editor.in_gesture() {
-            return;
-        }
-        if let Some(size) = self.image_size() {
-            self.editor.prepare_image_operation();
-            self.resize_dialog = Some(ResizeDialog::new(size, MAX_EDIT_PIXELS));
-        }
-    }
-
-    /// Show the Resize dialog, if it is up, and act on how it ended.
-    fn resize_dialog(&mut self, ctx: &egui::Context) {
-        let Some(dialog) = &mut self.resize_dialog else {
-            return;
-        };
-        match dialog.show(ctx) {
-            None => {}
-            Some(resize_dialog::Outcome::Cancel) => self.resize_dialog = None,
-            Some(resize_dialog::Outcome::Resize(size)) => {
-                self.resize_dialog = None;
-                self.execute(Command::Resize {
-                    width: size.width,
-                    height: size.height,
-                });
-            }
-        }
-    }
-
-    /// Show the Help menu's dialog, if one is up.
-    fn help_dialog(&mut self, ctx: &egui::Context) {
-        if let Some(dialog) = self.help_dialog
-            && help_dialog::show(ctx, dialog)
-        {
-            self.help_dialog = None;
-        }
-    }
-
-    /// Raise the Copy to / Move to warning modal (ADR 0009) with `body`: an outcome that did not
-    /// place the file as asked, worded for the case.
-    fn warn_file_op(&mut self, body: String) {
-        self.file_op_warning = Some(body);
-    }
-
-    /// The Copy to / Move to warning, while it is up: a dismiss-only modal (ADR 0009).
-    fn file_op_warning(&mut self, ctx: &egui::Context) {
-        let Some(body) = &self.file_op_warning else {
-            return;
-        };
-        if file_op_warning::show(ctx, body) {
-            self.file_op_warning = None;
-        }
-    }
-
-    /// The Copy to / Move to warning's message, while it is up (`None` otherwise): for tests.
-    pub fn file_op_warning_message(&self) -> Option<&str> {
-        self.file_op_warning.as_deref()
     }
 
     /// The selection box (dashed, with 8 handles) as painted last frame, in points.
@@ -660,21 +579,12 @@ impl LecoqApp {
         self.closing
     }
 
-    /// Is a modal dialog up? Window input (shortcuts, wheel, drops, pan) waits meanwhile.
-    fn dialog_up(&self) -> bool {
-        self.unsaved_prompt.is_some()
-            || self.resize_dialog.is_some()
-            || self.save.overwrite_prompt.is_some()
-            || self.help_dialog.is_some()
-            || self.file_op_warning.is_some()
-    }
-
     // ---- The unsaved-changes flow (#35, §6.4) ----
 
     /// Do `then` now, or, with unsaved changes, ask Save / Discard / Cancel first. Asked again while
     /// the prompt is up (or its save runs), nothing happens.
     fn proceed_or_ask(&mut self, then: Proceed) {
-        if self.unsaved_prompt.is_some() || self.save.after_save.is_some() {
+        if self.unsaved_prompt_up() || self.save.after_save.is_some() {
             return;
         }
         let leaves = match &then {
@@ -706,7 +616,7 @@ impl LecoqApp {
             .map(|s| s.file_name.clone())
             .or_else(|| self.path.as_deref().map(file_name))
             .unwrap_or_default();
-        self.unsaved_prompt = Some(UnsavedPrompt { file_name, then });
+        self.open_unsaved_prompt(file_name, then);
     }
 
     fn proceed(&mut self, then: Proceed) {
@@ -751,30 +661,11 @@ impl LecoqApp {
         if !ctx.input(|i| i.viewport().close_requested()) || self.closing {
             return;
         }
-        if self.is_modified() || self.unsaved_prompt.is_some() || self.save.after_save.is_some() {
+        if self.is_modified() || self.unsaved_prompt_up() || self.save.after_save.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.proceed_or_ask(Proceed::Close);
         } else {
             self.closing = true;
-        }
-    }
-
-    /// The prompt, while it is up, and the user's answer.
-    fn unsaved_prompt(&mut self, ctx: &egui::Context) {
-        let Some(prompt) = &self.unsaved_prompt else {
-            return;
-        };
-        let Some(answer) = unsaved_dialog::show(ctx, &prompt.file_name) else {
-            return;
-        };
-        let prompt = self.unsaved_prompt.take().expect("checked above");
-        match answer {
-            unsaved_dialog::Answer::Cancel => {}
-            unsaved_dialog::Answer::Discard => self.proceed(prompt.then),
-            unsaved_dialog::Answer::Save => {
-                self.save.after_save = Some(prompt.then);
-                self.save();
-            }
         }
     }
 
@@ -785,8 +676,8 @@ impl LecoqApp {
             || self.save.saving.is_some()
             || self.save.dialog.is_some()
             || self.save.queued.is_some()
-            || self.save.overwrite_prompt.is_some()
-            || self.file_op_warning.is_some()
+            || self.overwrite_prompt_up()
+            || self.file_op_warning_up()
         {
             return;
         }
@@ -1947,9 +1838,6 @@ impl eframe::App for LecoqApp {
                 self.execute(command);
             }
         }
-        self.unsaved_prompt(&ctx);
-        self.overwrite_prompt(&ctx);
-        self.file_op_warning(&ctx);
         self.poll_open_dialog();
         self.poll_folder_dialog();
         self.poll_save_dialog();
@@ -2030,8 +1918,7 @@ impl eframe::App for LecoqApp {
         ));
         self.view = view;
         self.show_context_menu(&ctx, &menu);
-        self.resize_dialog(&ctx);
-        self.help_dialog(&ctx);
+        self.show_modal(&ctx);
         self.start_animation(&ctx);
         self.request_pixels(&ctx);
 

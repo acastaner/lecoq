@@ -9,11 +9,11 @@ use lecoq_codec::SaveFormat;
 
 use super::dialog::DialogSlot;
 use super::job::{self, Job};
+use super::modal::{Modal, OverwritePrompt};
 use super::{LecoqApp, Proceed, file_name, same_file};
 use crate::editor::SaveStamp;
 use crate::save::{FlattenInput, SaveJob, SaveResult};
 use crate::strings;
-use crate::ui::overwrite_dialog;
 
 /// The save/export flow's state (#34, #35, #38): the Save As dialog, a save on the worker thread,
 /// a save queued behind a pending crop, the overwrite prompt, and the action a prompt's Save holds
@@ -25,8 +25,6 @@ pub(super) struct SaveState {
     pub(super) saving: Option<Saving>,
     /// A save asked for while the Document waits for its pixels (a queued crop): started then.
     pub(super) queued: Option<(PathBuf, SaveFormat)>,
-    /// "Overwrite animated image?" while it is up (#38).
-    pub(super) overwrite_prompt: Option<OverwritePrompt>,
     /// The action the prompt's Save is holding until the save (and any Save As dialog) is done.
     pub(super) after_save: Option<Proceed>,
 }
@@ -44,13 +42,6 @@ impl Saving {
     pub(super) fn is_running(&self) -> bool {
         self.job.is_running()
     }
-}
-
-/// "Overwrite animated image?" while it is up (#38, §6.4), and the save it holds.
-pub(super) struct OverwritePrompt {
-    file_name: String,
-    target: PathBuf,
-    format: SaveFormat,
 }
 
 impl LecoqApp {
@@ -104,7 +95,7 @@ impl LecoqApp {
     /// Save the Image to `target`. Over its own animated file, ask "Overwrite animated image?"
     /// first (§3.4, §6.4): the file written is a still image.
     fn save_to(&mut self, target: PathBuf, format: SaveFormat) {
-        if self.save.saving.is_some() || self.save.overwrite_prompt.is_some() {
+        if self.save.saving.is_some() || self.overwrite_prompt_up() {
             return;
         }
         if let Some(shown) = &self.shown
@@ -114,34 +105,19 @@ impl LecoqApp {
                 .as_deref()
                 .is_some_and(|own| same_file(own, &target))
         {
-            self.save.overwrite_prompt = Some(OverwritePrompt {
+            // `modal` and `shown` are disjoint fields, so this set is fine inside the `shown` borrow.
+            self.modal = Some(Modal::Overwrite(OverwritePrompt {
                 file_name: shown.file_name.clone(),
                 target,
                 format,
-            });
+            }));
             return;
         }
         self.write_to(target, format);
     }
 
-    /// The overwrite prompt, while it is up, and the user's answer.
-    pub(super) fn overwrite_prompt(&mut self, ctx: &egui::Context) {
-        let Some(prompt) = &self.save.overwrite_prompt else {
-            return;
-        };
-        let Some(answer) = overwrite_dialog::show(ctx, &prompt.file_name) else {
-            return;
-        };
-        let prompt = self.save.overwrite_prompt.take().expect("checked above");
-        match answer {
-            overwrite_dialog::Answer::Cancel => {}
-            overwrite_dialog::Answer::SaveAs => self.show_save_dialog(),
-            overwrite_dialog::Answer::Overwrite => self.write_to(prompt.target, prompt.format),
-        }
-    }
-
     /// Flatten and write the Image to `target` on the worker thread (§7.3).
-    fn write_to(&mut self, target: PathBuf, format: SaveFormat) {
+    pub(super) fn write_to(&mut self, target: PathBuf, format: SaveFormat) {
         if self.save.saving.is_some() {
             return;
         }
