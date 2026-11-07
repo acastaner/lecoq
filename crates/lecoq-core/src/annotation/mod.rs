@@ -27,7 +27,7 @@ pub use rectangle::Rectangle;
 pub use step_counter::StepCounter;
 pub use text::Text;
 
-use crate::geometry::{Affine, Point, Rect};
+use crate::geometry::{Affine, Point, Rect, Vector};
 use crate::image_op::ImageTransform;
 use crate::style::{PropertyKind, Style};
 
@@ -50,12 +50,14 @@ pub trait Shape {
     /// operations of ADR 0001).
     fn transform(&mut self, t: &Affine);
 
-    /// Follow an Image operation (ADR 0001). Each type decides how: shapes, lines, arrows,
-    /// freehand strokes and Insets apply `t.affine()` (as [`Rectangle`] does), so they rotate and
-    /// flip with the Image; text and Step counters stay upright: their box goes through
-    /// `t.upright_rect(..)` (a point anchor through `t.affine()`). Style scaling on resize is done
-    /// by [`Annotation::image_transform`], not here.
-    fn image_transform(&mut self, t: &ImageTransform);
+    /// Follow an Image operation (ADR 0001). `affine` is `t`'s pixel map, computed once by the
+    /// Document from the Image's size before the operation ([`ImageTransform::affine`]). Each type
+    /// decides how: shapes, lines, arrows, freehand strokes and Insets apply `affine` (as
+    /// [`Rectangle`] does), so they rotate and flip with the Image; text and Step counters stay
+    /// upright: their box's anchor goes through `affine`. The variant `t` is there for the few types
+    /// (Insets) that also move their own pixels. Style scaling on resize is done by
+    /// [`Annotation::image_transform`], not here.
+    fn image_transform(&mut self, t: &ImageTransform, size: Vector);
 
     /// The style properties the property bar shows for this type (§4.3), in display order.
     fn properties(&self) -> &'static [PropertyKind];
@@ -103,8 +105,8 @@ macro_rules! shapes {
             fn transform(&mut self, t: &Affine) {
                 match self { $(Self::$variant(s) => s.transform(t),)+ }
             }
-            fn image_transform(&mut self, t: &ImageTransform) {
-                match self { $(Self::$variant(s) => s.image_transform(t),)+ }
+            fn image_transform(&mut self, t: &ImageTransform, size: Vector) {
+                match self { $(Self::$variant(s) => s.image_transform(t, size),)+ }
             }
             fn properties(&self) -> &'static [PropertyKind] {
                 match self { $(Self::$variant(s) => s.properties(),)+ }
@@ -170,11 +172,12 @@ impl Annotation {
         self.bounds().expand(self.style.thickness / 2.0)
     }
 
-    /// Follow an Image operation (ADR 0001). A resize also scales the Style's sizes (§4.7): every
-    /// size property given in Image pixels is multiplied by `t.size_scale()` here (thickness, text's
-    /// font size, the Step counter's size).
-    pub fn image_transform(&mut self, t: &ImageTransform) {
-        self.shape.image_transform(t);
+    /// Follow an Image operation (ADR 0001). `affine` is `t`'s pixel map for the Image's size
+    /// before the operation, computed once by the Document ([`ImageTransform::affine`]). A resize
+    /// also scales the Style's sizes (§4.7): every size property given in Image pixels is multiplied
+    /// by `t.size_scale()` here (thickness, text's font size, the Step counter's size).
+    pub fn image_transform(&mut self, t: &ImageTransform, size: Vector) {
+        self.shape.image_transform(t, size);
         let s = t.size_scale();
         if s != 1.0 {
             self.style.thickness *= s;

@@ -267,15 +267,7 @@ impl Document {
             return false;
         };
         let pixels = full.rotate90(clockwise);
-        let (width, height) = (self.width as f32, self.height as f32);
-        self.image_operation(
-            pixels,
-            ImageTransform::Rotate90 {
-                clockwise,
-                width,
-                height,
-            },
-        );
+        self.image_operation(pixels, ImageTransform::Rotate90 { clockwise });
         true
     }
 
@@ -286,15 +278,7 @@ impl Document {
             return false;
         };
         let pixels = full.flip(horizontal);
-        let (width, height) = (self.width as f32, self.height as f32);
-        self.image_operation(
-            pixels,
-            ImageTransform::Flip {
-                horizontal,
-                width,
-                height,
-            },
-        );
+        self.image_operation(pixels, ImageTransform::Flip { horizontal });
         true
     }
 
@@ -331,6 +315,9 @@ impl Document {
             image: self.image_state(),
             ..self.baseline_snapshot()
         };
+        // `transform`'s pixel map needs the Image size from before the operation (rotate and flip
+        // place the old edges); capture it before the new pixels overwrite the size.
+        let old_size = Vector::new(self.width as f32, self.height as f32);
         self.width = pixels.width;
         self.height = pixels.height;
         self.full_resolution = Some(Arc::new(pixels));
@@ -338,7 +325,7 @@ impl Document {
         self.next_image_generation += 1;
         let bounds = self.bounds();
         for a in &mut self.annotations {
-            a.image_transform(&transform);
+            a.image_transform(&transform, old_size);
         }
         self.annotations
             .retain(|a| a.extent().intersect(&bounds).is_some());
@@ -968,14 +955,7 @@ mod history_sharing_tests {
         doc.set_history_pixel_cap(50_000);
 
         for _ in 0..4 {
-            doc.image_operation(
-                image(100, 100),
-                ImageTransform::Flip {
-                    horizontal: true,
-                    width: 100.0,
-                    height: 100.0,
-                },
-            );
+            doc.image_operation(image(100, 100), ImageTransform::Flip { horizontal: true });
         }
 
         // The oldest Image-operation steps were dropped to stay under the cap; undo still works on

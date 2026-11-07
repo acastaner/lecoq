@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::Shape;
 use crate::document::Pixels;
-use crate::geometry::{Affine, Point, Rect};
+use crate::geometry::{Affine, Point, Rect, Vector};
 use crate::image_op::ImageTransform;
 use crate::style::{PropertyKind, Style};
 
@@ -63,14 +63,14 @@ impl Shape for Inset {
         self.rect = t.apply_rect(self.rect);
     }
 
-    fn image_transform(&mut self, t: &ImageTransform) {
+    fn image_transform(&mut self, t: &ImageTransform, size: Vector) {
         // An Inset turns and mirrors with the Image (§4.7): its box and its pixels.
-        self.transform(&t.affine());
+        self.transform(&t.affine(size));
         match *t {
-            ImageTransform::Rotate90 { clockwise, .. } => {
+            ImageTransform::Rotate90 { clockwise } => {
                 self.pixels = Arc::new(self.pixels.rotate90(clockwise));
             }
-            ImageTransform::Flip { horizontal, .. } => {
+            ImageTransform::Flip { horizontal } => {
                 self.pixels = Arc::new(self.pixels.flip(horizontal));
             }
             ImageTransform::Crop { .. } | ImageTransform::Resize { .. } => {}

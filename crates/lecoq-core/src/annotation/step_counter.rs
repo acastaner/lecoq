@@ -9,7 +9,7 @@
 //! and leave the disc upright and its size alone (§4.7).
 
 use super::Shape;
-use crate::geometry::{Affine, Point, Rect};
+use crate::geometry::{Affine, Point, Rect, Vector};
 use crate::image_op::ImageTransform;
 use crate::style::{PropertyKind, Style};
 
@@ -60,8 +60,8 @@ impl Shape for StepCounter {
 
     /// The centre follows the Image; the disc stays upright (its size scales with the style on a
     /// resize, in `Annotation::image_transform`).
-    fn image_transform(&mut self, t: &ImageTransform) {
-        self.centre = t.affine().apply(self.centre);
+    fn image_transform(&mut self, t: &ImageTransform, size: Vector) {
+        self.centre = t.affine(size).apply(self.centre);
     }
 
     fn properties(&self) -> &'static [PropertyKind] {

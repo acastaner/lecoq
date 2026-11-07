@@ -214,8 +214,8 @@ impl Shape for Text {
     /// corner on the Image (a resize also scales a fixed width here, and the font size through
     /// `Annotation::image_transform`, which then relayouts); rotations and flips centre the box on
     /// its transformed centre.
-    fn image_transform(&mut self, t: &ImageTransform) {
-        let a = t.affine();
+    fn image_transform(&mut self, t: &ImageTransform, size: Vector) {
+        let a = t.affine(size);
         if a.b == 0.0 && a.c == 0.0 && a.a > 0.0 && a.d > 0.0 {
             self.origin = a.apply(self.origin);
             if let Some(w) = self.width {

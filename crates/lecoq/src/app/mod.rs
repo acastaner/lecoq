@@ -1962,7 +1962,7 @@ impl eframe::App for LecoqApp {
         self.poll_upgrade(&ctx);
         self.play_animation(&ctx);
         self.navigation.hold(self.animation_bytes());
-        self.editor.poll(&ctx);
+        self.editor.poll();
         self.expire_message(&ctx);
         self.drive_bench(&ctx);
         self.sync_fullscreen(&ctx);

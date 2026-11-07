@@ -8,7 +8,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use egui::CursorIcon;
 use lecoq_codec::Size;
@@ -150,7 +150,7 @@ pub struct SaveStamp {
 /// The font families for the property bar's font control.
 enum Fonts {
     NotListed,
-    Listing(mpsc::Receiver<Vec<String>>),
+    Listing(Job<Vec<String>>),
     Listed(Vec<String>),
 }
 
@@ -288,14 +288,17 @@ impl Editor {
         }
     }
 
-    /// §7.2: the fonts are enumerated the first time the text tool is used, in the background.
+    /// §7.2: the fonts are enumerated the first time the text tool is used, in the background. The
+    /// worker wakes the UI through the [`Job`] waker when the listing lands (#67), like every other
+    /// background worker; the property bar needs no timer poll.
     fn list_fonts(&mut self) {
         if matches!(self.fonts, Fonts::NotListed) {
-            let (tx, rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(lecoq_render::text::families());
-            });
-            self.fonts = Fonts::Listing(rx);
+            let waker = self.waker.as_ref().map(job::waker);
+            self.fonts = Fonts::Listing(Job::spawn(
+                "list-fonts",
+                waker,
+                lecoq_render::text::families,
+            ));
         }
     }
 
@@ -682,16 +685,14 @@ impl Editor {
         }
     }
 
-    /// Collect background results.
-    pub fn poll(&mut self, ctx: &egui::Context) {
-        if let Fonts::Listing(rx) = &self.fonts {
-            match rx.try_recv() {
-                Ok(names) => self.fonts = Fonts::Listed(names),
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(30))
-                }
-                Err(mpsc::TryRecvError::Disconnected) => self.fonts = Fonts::Listed(Vec::new()),
-            }
+    /// Collect background results. The font listing and the full-resolution decode each wake the
+    /// UI through their [`Job`] waker when they land (#67), so this only takes the result once it is
+    /// here; no timer poll.
+    pub fn poll(&mut self) {
+        if let Fonts::Listing(job) = &mut self.fonts
+            && let Some(names) = job.poll()
+        {
+            self.fonts = Fonts::Listed(names);
         }
         let Some(e) = &mut self.edited else {
             return;
@@ -1590,4 +1591,57 @@ fn source_key(display_key: u64, generation: u64) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (display_key, generation).hash(&mut h);
     h.finish() | 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// #67: the font listing wakes the UI through its [`Job`] waker when it lands, instead of the
+    /// old 30 ms `request_repaint_after` poll. With a waker set, the worker thread requests a
+    /// repaint on its own — observed here through the context's repaint callback, with no frame run
+    /// and no timer. (Before #67 the listing thread only sent on a channel and never woke the UI.)
+    #[test]
+    fn listing_fonts_wakes_the_ui_when_it_lands() {
+        let ctx = egui::Context::default();
+        let woken = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&woken);
+        // The callback must be `Send + Sync`, so signal through a shared atomic.
+        ctx.set_request_repaint_callback(move |_| flag.store(true, Ordering::SeqCst));
+
+        let mut editor = Editor::new();
+        editor.set_waker(ctx.clone());
+        editor.list_fonts();
+        assert!(
+            matches!(editor.fonts, Fonts::Listing(_)),
+            "the listing is in flight",
+        );
+
+        // The worker requests the repaint itself once `families()` returns.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !woken.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "the font listing never woke the UI through its waker",
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    /// Without a waker (editor-only tests that step frames themselves), the listing still lands:
+    /// polling collects it once the worker has finished.
+    #[test]
+    fn the_font_listing_lands_without_a_waker() {
+        let mut editor = Editor::new();
+        editor.list_fonts();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while editor.font_families().is_none() {
+            editor.poll();
+            assert!(std::time::Instant::now() < deadline, "fonts never landed");
+            std::thread::yield_now();
+        }
+        assert!(matches!(editor.fonts, Fonts::Listed(_)));
+    }
 }
