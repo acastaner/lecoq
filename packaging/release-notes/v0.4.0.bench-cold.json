@@ -1,0 +1,75 @@
+{
+ "bench": "cold",
+ "image": "/home/acastaner/Git/zimged/tools/bench/images/IMG_0001.jpg",
+ "binary": "/home/acastaner/Git/zimged/target/release/lecoq",
+ "session": "wayland",
+ "power_profile": "balanced",
+ "cpu": "12th Gen Intel(R) Core(TM) i5-12600KF",
+ "runs": 15,
+ "idle_s": 1.5,
+ "summary": {
+  "p50": 111.38,
+  "p90": 126.86,
+  "max": 186.0,
+  "min": 94.12,
+  "phases_median": {
+   "main": 8.649999999999999,
+   "renderer_ready": 107.935,
+   "decoded": 96.495,
+   "first_image_painted": 111.38
+  },
+  "failed_runs": 7,
+  "budget_p90_ms": 150.0,
+  "within_budget": true
+ },
+ "marks": [
+  {
+   "main": 12.73,
+   "decoded": 155.3,
+   "renderer_ready": 181.11,
+   "first_image_painted": 186.0
+  },
+  {
+   "main": 9.19,
+   "decoded": 91.99,
+   "renderer_ready": 106.49,
+   "first_image_painted": 109.85
+  },
+  {
+   "main": 7.45,
+   "decoded": 95.29,
+   "renderer_ready": 107.32,
+   "first_image_painted": 110.8
+  },
+  {
+   "main": 8.11,
+   "decoded": 97.13,
+   "renderer_ready": 108.55,
+   "first_image_painted": 111.96
+  },
+  {
+   "main": 2.68,
+   "decoded": 75.91,
+   "renderer_ready": 90.7,
+   "first_image_painted": 94.12
+  },
+  {
+   "main": 9.22,
+   "decoded": 108.71,
+   "renderer_ready": 115.24,
+   "first_image_painted": 118.55
+  },
+  {
+   "main": 7.88,
+   "decoded": 95.86,
+   "renderer_ready": 104.23,
+   "first_image_painted": 107.55
+  },
+  {
+   "main": 9.81,
+   "decoded": 99.22,
+   "renderer_ready": 123.5,
+   "first_image_painted": 126.86
+  }
+ ]
+}
