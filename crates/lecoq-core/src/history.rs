@@ -36,9 +36,14 @@ impl PartialEq for ImageState {
 }
 
 /// The Document's editable state, as stored in a step.
+///
+/// The Annotations are held behind an `Arc<[Annotation]>` so consecutive steps share one copy: the
+/// `after` of step *n* is the same pointer as the `before` of step *n* + 1 (the Document hands the
+/// same `Arc` to both), which halves the History's Annotation memory. `undo`/`redo` then clone the
+/// `Arc` (a pointer copy) and `restore` makes one `to_vec` to get the Document's working copy back.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Snapshot {
-    pub annotations: Vec<Annotation>,
+    pub annotations: Arc<[Annotation]>,
     pub selection: Vec<AnnotationId>,
     /// Only in Image-operation steps.
     pub image: Option<ImageState>,
@@ -168,5 +173,11 @@ impl History {
             }
         }
         seen.iter().map(|p| p.byte_len()).sum()
+    }
+
+    /// The done and redoable steps, oldest first, for tests that check snapshot sharing.
+    #[cfg(test)]
+    pub(crate) fn steps_for_test(&self) -> &[Step] {
+        &self.steps
     }
 }
