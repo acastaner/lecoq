@@ -1,6 +1,7 @@
 //! The directory scan (§3.2): the Image's Siblings, in the file manager's order.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fs::DirEntry;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -21,6 +22,10 @@ pub struct Sibling {
 pub struct SiblingList {
     dir: PathBuf,
     siblings: Vec<Sibling>,
+    /// Each Sibling's path to its index in `siblings`, so [`SiblingList::locate`] answers in
+    /// constant time instead of scanning the whole list on the frame the status bar asks (#62).
+    /// Rebuilt by [`SiblingList::reindex`] whenever `siblings` changes, so it never goes stale.
+    index: HashMap<PathBuf, usize>,
     order: Arc<dyn NameOrder>,
 }
 
@@ -44,7 +49,7 @@ impl SiblingList {
     /// Where `path` is in the list: `Ok(index)`, or `Err(index)` where it would be if it were a
     /// Sibling (a hidden file, an unsupported extension, a file from another directory).
     pub fn locate(&self, path: &Path) -> Result<usize, usize> {
-        if let Some(index) = self.siblings.iter().position(|s| s.path == path) {
+        if let Some(&index) = self.index.get(path) {
             return Ok(index);
         }
         let name = display_name(path);
@@ -54,11 +59,26 @@ impl SiblingList {
         Err(index)
     }
 
+    /// Rebuild [`Self::index`] from `siblings`. Called by every method that changes the list, so a
+    /// lookup never sees a stale index.
+    fn reindex(&mut self) {
+        self.index = self
+            .siblings
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.path.clone(), i))
+            .collect();
+    }
+
     /// Take `path` out of the list (it was trashed). Returns whether it was there.
     pub fn remove(&mut self, path: &Path) -> bool {
         let before = self.siblings.len();
         self.siblings.retain(|s| s.path != path);
-        self.siblings.len() != before
+        let changed = self.siblings.len() != before;
+        if changed {
+            self.reindex();
+        }
+        changed
     }
 
     /// Follow a file added to or removed from the directory (§3.2). Files that aren't Siblings are
@@ -80,6 +100,7 @@ impl SiblingList {
                         name,
                     },
                 );
+                self.reindex();
                 true
             }
             Change::Removed(path) => self.remove(path),
@@ -162,11 +183,14 @@ pub fn scan(dir: &Path, order: Arc<dyn NameOrder>) -> io::Result<SiblingList> {
         .into_iter()
         .filter_map(|i| taken[i].take())
         .collect();
-    Ok(SiblingList {
+    let mut list = SiblingList {
         dir: dir.to_owned(),
         siblings,
+        index: HashMap::new(),
         order,
-    })
+    };
+    list.reindex();
+    Ok(list)
 }
 
 /// What a [`PendingScan`] brings back.
