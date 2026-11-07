@@ -2,6 +2,7 @@
 //! their tickets land.
 
 pub mod canvas;
+pub mod file_op_warning;
 pub mod help_dialog;
 pub mod menu_bar;
 pub mod overwrite_dialog;

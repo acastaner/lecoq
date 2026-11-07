@@ -228,17 +228,30 @@ pub fn moved_to(folder: &str) -> String {
     format!("Moved to {folder}")
 }
 
-/// A name already taken in the Target folder (stories 27–28): nothing is done.
+/// A name already taken in the Target folder (stories 27–28): nothing is done. Shown in the Copy
+/// to / Move to warning modal (ADR 0009).
 pub fn already_exists(name: &str, folder: &str) -> String {
     format!("{name} already exists in {folder}")
 }
 
+/// A Move into the folder the file is already in (story 29): harmless, and worded neutrally — the
+/// file is already where it was asked to go (ADR 0009).
+pub fn already_in_folder(name: &str, folder: &str) -> String {
+    format!("{name} is already in {folder}")
+}
+
+/// A cross-device Move whose copy landed but whose original couldn't be removed (story 31): worded
+/// honestly, since the file *is* in the Target folder (ADR 0009).
+pub fn moved_copy_couldnt_remove(name: &str, folder: &str, reason: &str) -> String {
+    format!("Moved a copy of {name} to {folder}, but couldn't remove the original: {reason}")
+}
+
 pub fn cant_copy_file(name: &str, reason: &str) -> String {
-    format!("Can't copy {name}: {reason}")
+    format!("Couldn't copy {name}: {reason}")
 }
 
 pub fn cant_move_file(name: &str, reason: &str) -> String {
-    format!("Can't move {name}: {reason}")
+    format!("Couldn't move {name}: {reason}")
 }
 pub const IMAGE_COPIED: &str = "Image copied to the clipboard";
 pub const ANNOTATIONS_COPIED: &str = "Annotations copied to the clipboard";
@@ -325,6 +338,10 @@ pub fn overwrite_animation(name: &str) -> String {
 
 pub const OVERWRITE: &str = "Overwrite";
 pub const SAVE_AS_BUTTON: &str = "Save As…";
+
+/// The Copy to / Move to warning modal's title (ADR 0009): a dismiss-only notice that the File
+/// operation did not place the file as asked. The body carries the outcome-specific wording.
+pub const FILE_OP_WARNING_TITLE: &str = "File operation";
 
 pub const RESIZE_TITLE: &str = "Resize";
 pub const RESIZE: &str = "Resize";

@@ -117,6 +117,11 @@ fn copy_leaves_the_same_image_on_screen_and_says_where_it_went() {
     );
     assert_eq!(app.status("Sibling position"), "1 / 2");
     assert_eq!(app.status("Message"), "Copied to Keepers");
+    assert_eq!(
+        app.harness.state().file_op_warning_message(),
+        None,
+        "a success keeps the status bar, no modal (ADR 0009)"
+    );
     assert!(
         target.join("a.jpg").exists(),
         "the copy landed in the folder"
@@ -194,7 +199,18 @@ fn a_name_already_in_the_target_folder_is_refused() {
 
     copy_to(&mut app, &dialogs, &target);
 
-    assert_eq!(app.status("Message"), "a.jpg already exists in target");
+    // The name clash opens the warning modal (ADR 0009), not the status bar.
+    assert_eq!(
+        app.harness.state().file_op_warning_message(),
+        Some("a.jpg already exists in target")
+    );
+    assert_eq!(app.status_field("Message"), None);
+    assert!(
+        app.harness
+            .query_by_label(lecoq::strings::FILE_OP_WARNING_TITLE)
+            .is_some(),
+        "the modal is rendered"
+    );
     assert_eq!(
         std::fs::read(target.join("a.jpg")).unwrap(),
         b"not the same file",
@@ -210,20 +226,56 @@ fn copying_into_its_own_folder_hits_the_collision_rule() {
 
     copy_to(&mut app, &dialogs, &own);
 
-    assert!(app.status("Message").starts_with("a.jpg already exists in"));
+    assert!(
+        app.harness
+            .state()
+            .file_op_warning_message()
+            .is_some_and(|m| m.starts_with("a.jpg already exists in")),
+        "warning was {:?}",
+        app.harness.state().file_op_warning_message()
+    );
 }
 
 #[test]
-fn moving_into_its_own_folder_does_nothing_and_says_nothing() {
+fn moving_into_its_own_folder_does_nothing_but_says_so_neutrally() {
     let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
     let own = app.dir.path().to_path_buf();
 
     move_to(&mut app, &dialogs, &own);
 
+    // Nothing moves and the file stays — but the outcome is a neutral modal line now, not silence
+    // (ADR 0009): the file is already where it was asked to go.
     assert_eq!(app.status("File name"), "a.jpg");
     assert_eq!(app.status("Sibling position"), "1 / 2");
     assert_eq!(app.status_field("Message"), None);
+    assert!(
+        app.harness
+            .state()
+            .file_op_warning_message()
+            .is_some_and(|m| m.starts_with("a.jpg is already in")),
+        "a neutral warning, {:?}",
+        app.harness.state().file_op_warning_message()
+    );
     assert!(app.dir.path().join("a.jpg").exists());
+}
+
+#[test]
+fn the_warning_modal_is_dismissed_by_its_close_button() {
+    let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
+    let (_t, target) = target_dir("target");
+    std::fs::write(target.join("a.jpg"), b"not the same file").unwrap();
+
+    copy_to(&mut app, &dialogs, &target);
+    assert!(app.harness.state().file_op_warning_message().is_some());
+
+    app.dialog_control(lecoq::strings::CLOSE).click();
+    app.settle();
+
+    assert_eq!(
+        app.harness.state().file_op_warning_message(),
+        None,
+        "Close dismisses the modal"
+    );
 }
 
 // ---- An OS failure (story 32) ----
@@ -237,11 +289,16 @@ fn a_failed_copy_keeps_the_image_and_says_why() {
     copy_to(&mut app, &dialogs, &target);
 
     set_readonly(&target, false); // so the temp dir can be cleaned up
+    // The failure opens the warning modal (ADR 0009), not the status bar.
     assert!(
-        app.status("Message").starts_with("Can't copy a.jpg:"),
-        "message was {:?}",
-        app.status("Message")
+        app.harness
+            .state()
+            .file_op_warning_message()
+            .is_some_and(|m| m.starts_with("Couldn't copy a.jpg:")),
+        "warning was {:?}",
+        app.harness.state().file_op_warning_message()
     );
+    assert_eq!(app.status_field("Message"), None);
     assert_eq!(
         app.status("File name"),
         "a.jpg",
@@ -258,11 +315,16 @@ fn a_failed_move_keeps_the_image_and_says_why() {
     move_to(&mut app, &dialogs, &target);
 
     set_readonly(&target, false); // so the temp dir can be cleaned up
+    // The failure opens the warning modal (ADR 0009), not the status bar.
     assert!(
-        app.status("Message").starts_with("Can't move a.jpg:"),
-        "message was {:?}",
-        app.status("Message")
+        app.harness
+            .state()
+            .file_op_warning_message()
+            .is_some_and(|m| m.starts_with("Couldn't move a.jpg:")),
+        "warning was {:?}",
+        app.harness.state().file_op_warning_message()
     );
+    assert_eq!(app.status_field("Message"), None);
     assert_eq!(
         app.status("File name"),
         "a.jpg",
