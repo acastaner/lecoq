@@ -5,7 +5,9 @@
 //!
 //! Adding a property (arrowheads, font, size, mode, strength, …):
 //! 1. a field on [`Style`] with its default in `Style::default`,
-//! 2. a variant in [`PropertyKind`] and in [`Property`], and an arm in `Style::get`/`Style::set`,
+//! 2. one line in the `properties!` list below (it declares the [`PropertyKind`]/[`Property`]
+//!    variants, `Property::kind` and `Style::get`), plus an arm in `Style::set` for how the value is
+//!    written back (its range-clamping),
 //! 3. a control in the `lecoq` crate's `ui/property_bar.rs`,
 //! 4. the kind in the `properties()` list of the Annotation types (and tools) that use it.
 
@@ -248,68 +250,65 @@ impl Default for Style {
     }
 }
 
-/// Names a style property, without a value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum PropertyKind {
-    LineColour,
-    FillColour,
-    Thickness,
-    Shadow,
-    CounterSize,
-    /// The text colour: the same field as the line colour (`Style::line`).
-    TextColour,
-    Font,
-    FontSize,
-    Arrowheads,
-    BorderColour,
-    HighlightMode,
-    HighlightColour,
-    Magnification,
-    ObfuscateMode,
-    Strength,
-}
-
-/// A style property with its value: one change in the property bar.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Property {
-    LineColour(Rgba),
-    FillColour(Option<Rgba>),
-    Thickness(f32),
-    Shadow(bool),
-    CounterSize(f32),
-    TextColour(Rgba),
-    Font(std::sync::Arc<str>),
-    FontSize(f32),
-    Arrowheads(Arrowheads),
-    /// `None` is no border.
-    BorderColour(Option<Rgba>),
-    HighlightMode(HighlightMode),
-    HighlightColour(Rgba),
-    Magnification(f32),
-    ObfuscateMode(ObfuscateMode),
-    Strength(f32),
-}
-
-impl Property {
-    pub fn kind(&self) -> PropertyKind {
-        match self {
-            Property::LineColour(_) => PropertyKind::LineColour,
-            Property::FillColour(_) => PropertyKind::FillColour,
-            Property::Thickness(_) => PropertyKind::Thickness,
-            Property::Shadow(_) => PropertyKind::Shadow,
-            Property::CounterSize(_) => PropertyKind::CounterSize,
-            Property::TextColour(_) => PropertyKind::TextColour,
-            Property::Font(_) => PropertyKind::Font,
-            Property::FontSize(_) => PropertyKind::FontSize,
-            Property::Arrowheads(_) => PropertyKind::Arrowheads,
-            Property::BorderColour(_) => PropertyKind::BorderColour,
-            Property::HighlightMode(_) => PropertyKind::HighlightMode,
-            Property::HighlightColour(_) => PropertyKind::HighlightColour,
-            Property::Magnification(_) => PropertyKind::Magnification,
-            Property::ObfuscateMode(_) => PropertyKind::ObfuscateMode,
-            Property::Strength(_) => PropertyKind::Strength,
+/// Declares the property vocabulary from one list: [`PropertyKind`] (a property named, no value),
+/// [`Property`] (named, with its value), [`Property::kind`] (value → name) and [`Style::get`] (name
+/// → current value). Each entry is `Variant(ValueType) => style_field`; several variants may read
+/// the same field (the text colour reads `line`). The reverse, writing a value back with its
+/// range-clamping, keeps its own match in [`Style::set`] below — that is genuine behaviour, not a
+/// mirror, so it is not generated. One new property is one line here plus its `set` arm. This is
+/// the same table-from-a-macro shape as `annotation`'s `shapes!`.
+macro_rules! properties {
+    ($( $variant:ident($ty:ty) => $field:ident ),+ $(,)?) => {
+        /// Names a style property, without a value.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum PropertyKind {
+            $($variant,)+
         }
-    }
+
+        /// A style property with its value: one change in the property bar.
+        #[derive(Clone, Debug, PartialEq)]
+        pub enum Property {
+            $($variant($ty),)+
+        }
+
+        impl Property {
+            /// Which property this is, without its value.
+            pub fn kind(&self) -> PropertyKind {
+                match self {
+                    $(Property::$variant(_) => PropertyKind::$variant,)+
+                }
+            }
+        }
+
+        impl Style {
+            /// The current value of `kind`, as a [`Property`]. (A clone of a `Copy` field is a copy.)
+            pub fn get(&self, kind: PropertyKind) -> Property {
+                match kind {
+                    $(PropertyKind::$variant => Property::$variant(self.$field.clone()),)+
+                }
+            }
+        }
+    };
+}
+
+properties! {
+    LineColour(Rgba) => line,
+    FillColour(Option<Rgba>) => fill,
+    Thickness(f32) => thickness,
+    Shadow(bool) => shadow,
+    CounterSize(f32) => counter_size,
+    // The text colour is the same field as the line colour (`Style::line`).
+    TextColour(Rgba) => line,
+    Font(std::sync::Arc<str>) => font,
+    FontSize(f32) => font_size,
+    Arrowheads(Arrowheads) => arrowheads,
+    // `None` is no border.
+    BorderColour(Option<Rgba>) => border,
+    HighlightMode(HighlightMode) => highlight_mode,
+    HighlightColour(Rgba) => highlight,
+    Magnification(f32) => magnification,
+    ObfuscateMode(ObfuscateMode) => obfuscate_mode,
+    Strength(f32) => strength,
 }
 
 /// Thickness limits of the property bar.
@@ -329,26 +328,6 @@ pub const STRENGTH_RANGE: std::ops::RangeInclusive<f32> = 2.0..=100.0;
 pub const DEFAULT_FONT: &str = "sans-serif";
 
 impl Style {
-    pub fn get(&self, kind: PropertyKind) -> Property {
-        match kind {
-            PropertyKind::LineColour => Property::LineColour(self.line),
-            PropertyKind::FillColour => Property::FillColour(self.fill),
-            PropertyKind::Thickness => Property::Thickness(self.thickness),
-            PropertyKind::Shadow => Property::Shadow(self.shadow),
-            PropertyKind::CounterSize => Property::CounterSize(self.counter_size),
-            PropertyKind::TextColour => Property::TextColour(self.line),
-            PropertyKind::Font => Property::Font(self.font.clone()),
-            PropertyKind::FontSize => Property::FontSize(self.font_size),
-            PropertyKind::Arrowheads => Property::Arrowheads(self.arrowheads),
-            PropertyKind::BorderColour => Property::BorderColour(self.border),
-            PropertyKind::HighlightMode => Property::HighlightMode(self.highlight_mode),
-            PropertyKind::HighlightColour => Property::HighlightColour(self.highlight),
-            PropertyKind::Magnification => Property::Magnification(self.magnification),
-            PropertyKind::ObfuscateMode => Property::ObfuscateMode(self.obfuscate_mode),
-            PropertyKind::Strength => Property::Strength(self.strength),
-        }
-    }
-
     /// Values read from `config.toml` or the clipboard JSON brought back into range.
     pub fn sanitised(mut self) -> Self {
         if !self.thickness.is_finite() {
