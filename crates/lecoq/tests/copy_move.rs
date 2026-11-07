@@ -278,6 +278,25 @@ fn the_warning_modal_is_dismissed_by_its_close_button() {
     );
 }
 
+#[test]
+fn the_warning_modal_is_dismissed_by_the_escape_key() {
+    let (mut app, dialogs) = folder(&["a.jpg", "b.jpg"], "a.jpg");
+    let (_t, target) = target_dir("target");
+    std::fs::write(target.join("a.jpg"), b"not the same file").unwrap();
+
+    copy_to(&mut app, &dialogs, &target);
+    assert!(app.harness.state().file_op_warning_message().is_some());
+
+    app.press(egui::Key::Escape);
+    app.settle();
+
+    assert_eq!(
+        app.harness.state().file_op_warning_message(),
+        None,
+        "Esc dismisses the modal"
+    );
+}
+
 // ---- An OS failure (story 32) ----
 
 #[test]

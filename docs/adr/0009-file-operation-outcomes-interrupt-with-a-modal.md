@@ -1,5 +1,5 @@
 ---
-Status: proposed
+Status: accepted
 ---
 
 # A File operation that doesn't place the file interrupts with a modal
