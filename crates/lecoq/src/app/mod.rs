@@ -493,6 +493,13 @@ impl LecoqApp {
         self.editor.composite()
     }
 
+    /// How many times the composite has been (re)rendered for the open Image (#58, ADR 0011): a
+    /// test seam for the whole-Image composite's reuse across pan and zoom below the display
+    /// density. Off the render path.
+    pub fn composite_renders(&self) -> u64 {
+        self.editor.composite_renders()
+    }
+
     /// The crop tool's region, in Image pixels (§4.1 C).
     pub fn crop_region(&self) -> Option<lecoq_core::Rect> {
         self.editor.crop_region()
