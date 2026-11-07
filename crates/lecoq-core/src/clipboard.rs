@@ -163,6 +163,23 @@ pub(crate) mod pixels_serde {
 mod base64 {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+    /// Sentinel in [`REVERSE`] for bytes that are not base64 symbols.
+    const INVALID: u8 = 0xFF;
+
+    /// Reverse of [`ALPHABET`]: maps an input byte to its 6-bit value, or
+    /// [`INVALID`] for any byte outside the alphabet. Built at compile time so
+    /// decoding is one indexed load per byte instead of a linear scan of the
+    /// alphabet (docs/perf-review.md finding 9).
+    const REVERSE: [u8; 256] = {
+        let mut table = [INVALID; 256];
+        let mut i = 0;
+        while i < ALPHABET.len() {
+            table[ALPHABET[i] as usize] = i as u8;
+            i += 1;
+        }
+        table
+    };
+
     pub fn encode(data: &[u8]) -> String {
         let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
         for chunk in data.chunks(3) {
@@ -189,6 +206,39 @@ mod base64 {
         let mut n = 0u32;
         let mut bits = 0;
         for &c in text {
+            let v = REVERSE[c as usize];
+            if v == INVALID {
+                return None;
+            }
+            let v = u32::from(v);
+            n = (n << 6) | v;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((n >> bits) as u8);
+                n &= (1 << bits) - 1;
+            }
+        }
+        Some(out)
+    }
+}
+
+#[cfg(test)]
+mod base64_tests {
+    use super::base64;
+
+    /// Reference decoder: the original linear-alphabet-search implementation,
+    /// kept here as an independent source of truth so the refactor can be
+    /// proven to decode identically (including for invalid and odd-length
+    /// input).
+    fn reference_decode(text: &str) -> Option<Vec<u8>> {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let text = text.trim_end_matches('=').as_bytes();
+        let mut out = Vec::with_capacity(text.len() * 3 / 4);
+        let mut n = 0u32;
+        let mut bits = 0;
+        for &c in text {
             let v = ALPHABET.iter().position(|&a| a == c)? as u32;
             n = (n << 6) | v;
             bits += 6;
@@ -199,5 +249,92 @@ mod base64 {
             }
         }
         Some(out)
+    }
+
+    #[test]
+    fn round_trips_every_length_modulo_3() {
+        for len in 0..=24usize {
+            let data: Vec<u8> = (0..len)
+                .map(|i| (i.wrapping_mul(37) ^ 0xA5) as u8)
+                .collect();
+            let encoded = base64::encode(&data);
+            assert_eq!(
+                base64::decode(&encoded).as_deref(),
+                Some(data.as_slice()),
+                "round trip failed for len {len} (len % 3 == {})",
+                len % 3
+            );
+        }
+    }
+
+    #[test]
+    fn matches_rfc4648_test_vectors() {
+        // RFC 4648 section 10.
+        let vectors: &[(&str, &str)] = &[
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ];
+        for (plain, encoded) in vectors {
+            assert_eq!(
+                base64::encode(plain.as_bytes()),
+                *encoded,
+                "encode {plain:?}"
+            );
+            assert_eq!(
+                base64::decode(encoded).as_deref(),
+                Some(plain.as_bytes()),
+                "decode {encoded:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_character() {
+        // Characters outside the 64-symbol alphabet are refused, as before.
+        for bad in ["Zm9v@g==", "Zm 9v", "Zm-9v", "****", "Zm9v\n"] {
+            assert_eq!(base64::decode(bad), None, "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn rejects_interior_padding() {
+        // A '=' that is not trailing is not a valid symbol and is refused,
+        // matching the original decoder (which only trims trailing padding).
+        assert_eq!(base64::decode("Zm=9v"), None);
+        assert_eq!(base64::decode("Z=m9v"), None);
+    }
+
+    #[test]
+    fn decodes_identically_to_reference() {
+        // Equivalence sweep across valid, invalid, padded, interior-padded and
+        // truncated/odd-length inputs: the table-driven decoder must agree with
+        // the original linear-search decoder on every one.
+        let cases = [
+            "", "A", "AB", "ABC", "ABCD", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmFy", "+/+/",
+            "////", "Z",        // truncated: one leftover symbol
+            "Zm",       // truncated: residual bits dropped
+            "Zm9",      // truncated
+            "Zm9vY",    // truncated
+            "Zm9v@g==", // invalid character
+            "Zm=9v",    // interior padding
+            "a=b",      // interior padding
+            "====",     // all padding, trims to empty
+            "Zm9v=",    // trailing padding on a complete group
+            " ",        // whitespace only
+            "\t\n",     // whitespace only
+            "😀",       // multibyte non-alphabet
+        ];
+        for case in cases {
+            assert_eq!(
+                base64::decode(case),
+                reference_decode(case),
+                "decode disagreed with reference for {case:?}",
+            );
+        }
     }
 }
