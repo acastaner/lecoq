@@ -176,10 +176,12 @@ pub fn scan(dir: &Path, order: Arc<dyn NameOrder>) -> io::Result<SiblingList> {
             found.push(Sibling { path, name });
         }
     }
-    let names: Vec<String> = found.iter().map(|s| s.name.clone()).collect();
+    // Sort by borrowed names, so a large folder's scan copies no name to order it (#66).
+    let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
+    let indices = order.sorted_indices(&names);
+    drop(names); // Release the borrow of `found` before moving the Siblings out of it.
     let mut taken: Vec<Option<Sibling>> = found.into_iter().map(Some).collect();
-    let siblings = order
-        .sorted_indices(&names)
+    let siblings = indices
         .into_iter()
         .filter_map(|i| taken[i].take())
         .collect();

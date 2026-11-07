@@ -173,6 +173,10 @@ pub struct Document {
     next_id: u64,
     /// The state when the open gesture began.
     gesture: Option<Snapshot>,
+    /// The current committed Annotations behind a shared pointer, kept equal to `annotations`
+    /// whenever no gesture is open. A step's `before` reuses this `Arc`, and its `after` becomes
+    /// the next step's `before`, so consecutive steps share one copy (§4.8, issue #66).
+    snapshot_annotations: Arc<[Annotation]>,
     /// Bumped on every visible change, so renderers know when to redraw.
     revision: u64,
 }
@@ -192,6 +196,7 @@ impl Document {
             history: History::new(),
             next_id: 1,
             gesture: None,
+            snapshot_annotations: Arc::from([]),
             revision: 0,
         }
     }
@@ -322,7 +327,10 @@ impl Document {
     /// that stores the pixels and Annotations from before; the History's pixel cap is enforced.
     pub fn image_operation(&mut self, pixels: Pixels, transform: ImageTransform) {
         assert!(self.gesture.is_none(), "image operation inside a gesture");
-        let before = self.snapshot_with_image();
+        let before = Snapshot {
+            image: self.image_state(),
+            ..self.baseline_snapshot()
+        };
         self.width = pixels.width;
         self.height = pixels.height;
         self.full_resolution = Some(Arc::new(pixels));
@@ -338,7 +346,10 @@ impl Document {
         self.selection
             .retain(|id| annotations.iter().any(|a| a.id == *id));
         self.revision += 1;
-        let after = self.snapshot_with_image();
+        let after = Snapshot {
+            image: self.image_state(),
+            ..self.snapshot_after()
+        };
         self.history.push(Step {
             kind: StepKind::ImageOperation,
             before,
@@ -442,16 +453,16 @@ impl Document {
     /// Start a gesture: the edits until [`Self::commit_gesture`] become one History step.
     pub fn begin_gesture(&mut self) {
         assert!(self.gesture.is_none(), "a gesture is already open");
-        self.gesture = Some(self.snapshot());
+        self.gesture = Some(self.baseline_snapshot());
     }
 
     /// End the gesture. Records a step if anything changed; returns whether it did.
     pub fn commit_gesture(&mut self) -> bool {
         let before = self.gesture.take().expect("no open gesture");
-        let after = self.snapshot();
-        if before.annotations == after.annotations {
+        if *before.annotations == *self.annotations {
             return false;
         }
+        let after = self.snapshot_after();
         self.history.push(Step {
             kind: StepKind::Gesture,
             before,
@@ -639,7 +650,7 @@ impl Document {
             kind: property.kind(),
             targets: self.selection.clone(),
         };
-        let before = self.snapshot();
+        let before = self.baseline_snapshot();
         let selection = self.selection.clone();
         for a in &mut self.annotations {
             if selection.contains(&a.id) {
@@ -648,10 +659,10 @@ impl Document {
             }
         }
         self.revision += 1;
-        let after = self.snapshot();
-        if before.annotations == after.annotations {
+        if *before.annotations == *self.annotations {
             return true;
         }
+        let after = self.snapshot_after();
         if merge && let Some(last) = self.history.last_mut().filter(|s| s.kind == kind) {
             last.after = after;
             return true;
@@ -716,33 +727,46 @@ impl Document {
         self.history.mark_saved();
     }
 
-    fn snapshot(&self) -> Snapshot {
+    /// A step's `before`: reuses the shared baseline `Arc` for the Annotations (no copy). Valid
+    /// only at a committed boundary, where the baseline equals the working `annotations` — every
+    /// caller takes it before editing.
+    fn baseline_snapshot(&self) -> Snapshot {
         Snapshot {
-            annotations: self.annotations.clone(),
+            annotations: Arc::clone(&self.snapshot_annotations),
             selection: self.selection.clone(),
             image: None,
         }
     }
 
-    /// A snapshot that also holds the Image, for Image-operation steps.
-    fn snapshot_with_image(&self) -> Snapshot {
+    /// A step's `after`: a fresh shared copy of the current Annotations, which also becomes the new
+    /// baseline so the next step's `before` shares this very `Arc`.
+    fn snapshot_after(&mut self) -> Snapshot {
+        let annotations: Arc<[Annotation]> = Arc::from(self.annotations.as_slice());
+        self.snapshot_annotations = Arc::clone(&annotations);
+        Snapshot {
+            annotations,
+            selection: self.selection.clone(),
+            image: None,
+        }
+    }
+
+    /// The Image as the current Document holds it, for an Image-operation step's snapshots.
+    fn image_state(&self) -> Option<ImageState> {
         let pixels = self
             .full_resolution
             .clone()
             .expect("Image operations need the full-resolution pixels");
-        Snapshot {
-            image: Some(ImageState {
-                width: self.width,
-                height: self.height,
-                pixels,
-                generation: self.image_generation,
-            }),
-            ..self.snapshot()
-        }
+        Some(ImageState {
+            width: self.width,
+            height: self.height,
+            pixels,
+            generation: self.image_generation,
+        })
     }
 
     fn restore(&mut self, s: &Snapshot) {
-        self.annotations = s.annotations.clone();
+        self.annotations = s.annotations.to_vec();
+        self.snapshot_annotations = Arc::clone(&s.annotations);
         self.selection = s.selection.clone();
         if let Some(image) = &s.image {
             self.width = image.width;
@@ -870,5 +894,95 @@ mod pixel_layout_tests {
             data: PixelData::RgbaPremultiplied(vec![1, 2, 3, 4]),
         };
         assert_eq!(bytes(&premult.premultiplied()), &[1, 2, 3, 4]);
+    }
+}
+
+#[cfg(test)]
+mod history_sharing_tests {
+    use std::sync::Arc;
+
+    use super::{Document, PixelData, Pixels};
+    use crate::annotation::Rectangle;
+    use crate::geometry::{Point, Rect};
+    use crate::image_op::ImageTransform;
+    use crate::style::Style;
+
+    fn add_rect(doc: &mut Document, x: f32) {
+        doc.step(|d| {
+            d.add(
+                Rectangle::new(Rect::from_min_size(Point::new(x, x), 10.0, 10.0)),
+                Style::default(),
+            );
+        });
+    }
+
+    fn image(w: u32, h: u32) -> Pixels {
+        Pixels {
+            width: w,
+            height: h,
+            data: PixelData::Rgb(vec![0u8; (w * h * 3) as usize]),
+        }
+    }
+
+    #[test]
+    fn undo_restores_the_exact_annotations_after_several_steps() {
+        let mut doc = Document::new(100, 100);
+        add_rect(&mut doc, 1.0);
+        let after_one = doc.annotations().to_vec();
+        add_rect(&mut doc, 2.0);
+        add_rect(&mut doc, 3.0);
+        let after_three = doc.annotations().to_vec();
+
+        assert!(doc.undo());
+        assert!(doc.undo());
+        assert_eq!(doc.annotations(), after_one.as_slice());
+
+        assert!(doc.redo());
+        assert!(doc.redo());
+        assert_eq!(doc.annotations(), after_three.as_slice());
+    }
+
+    #[test]
+    fn consecutive_steps_share_one_annotation_copy() {
+        let mut doc = Document::new(100, 100);
+        add_rect(&mut doc, 1.0);
+        add_rect(&mut doc, 2.0);
+        add_rect(&mut doc, 3.0);
+
+        let steps = doc.history.steps_for_test();
+        assert_eq!(steps.len(), 3);
+        for pair in steps.windows(2) {
+            assert!(
+                Arc::ptr_eq(&pair[0].after.annotations, &pair[1].before.annotations),
+                "the after of one step must be the same Arc as the before of the next",
+            );
+        }
+    }
+
+    #[test]
+    fn pixel_cap_drops_the_oldest_image_operation_steps() {
+        // Each operation stores one 100×100 RGB buffer (30 000 bytes). A 50 000-byte cap keeps the
+        // pixels of one step, so the oldest steps are dropped as new ones arrive.
+        let mut doc = Document::new(100, 100);
+        doc.set_full_resolution(Arc::new(image(100, 100)));
+        doc.set_history_pixel_cap(50_000);
+
+        for _ in 0..4 {
+            doc.image_operation(
+                image(100, 100),
+                ImageTransform::Flip {
+                    horizontal: true,
+                    width: 100.0,
+                    height: 100.0,
+                },
+            );
+        }
+
+        // The oldest Image-operation steps were dropped to stay under the cap; undo still works on
+        // what remains and never panics.
+        assert!(doc.undo_len() < 4, "the cap must drop the oldest steps");
+        while doc.can_undo() {
+            assert!(doc.undo());
+        }
     }
 }

@@ -135,9 +135,9 @@ impl NameOrder for DolphinOrder {
     /// numbers, the numeric chains only ASCII ones, so `"37 x" < "١77" < "1٢38"` yet `"37 x" >
     /// "1٢38"`), and the standard library's sort may panic on that. Dolphin's sort never fails and,
     /// given the names in the same order (both list the folder with `readdir`), gives Dolphin's result.
-    fn sorted_indices(&self, names: &[String]) -> Vec<usize> {
+    fn sorted_indices(&self, names: &[&str]) -> Vec<usize> {
         let mut indices: Vec<usize> = (0..names.len()).collect();
-        let less = |a: usize, b: usize| self.compare(&names[a], &names[b]) == Ordering::Less;
+        let less = |a: usize, b: usize| self.compare(names[a], names[b]) == Ordering::Less;
         merge_sort(&mut indices, &less);
         indices
     }

@@ -5,6 +5,7 @@
 //! what clears the History when moving to another Image (§4.8). The active tool and each tool's
 //! style outlive it.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -714,23 +715,41 @@ impl Editor {
     // ---- Property bar ----
 
     /// What the property bar edits: the selection's style and properties, or the active tool's.
-    pub fn property_target(&self) -> (Style, Vec<PropertyKind>, bool) {
-        if let Some(doc) = self.document() {
-            let mut selected = doc.selected();
-            if let Some(first) = selected.next() {
-                let mut kinds = first.shape.properties().to_vec();
-                for other in selected {
-                    let theirs = other.shape.properties();
-                    kinds.retain(|k| theirs.contains(k));
+    ///
+    /// The style and the property list are borrowed, not cloned, every frame (#66): a single
+    /// selection and the active tool hand back their own `Style` and `&'static` property list; only
+    /// a multi-selection, whose property list is the intersection of its members', owns a `Vec`.
+    pub fn property_target(&self) -> (Cow<'_, Style>, Cow<'static, [PropertyKind]>, bool) {
+        if let Some(doc) = self.document()
+            && let Some(first) = doc.selected().next()
+        {
+            let first_props = first.shape.properties();
+            // Only a multi-selection needs an owned, intersected list; one Annotation borrows.
+            let kinds = match doc.selected().nth(1) {
+                None => Cow::Borrowed(first_props),
+                Some(_) => {
+                    let mut kinds = first_props.to_vec();
+                    for other in doc.selected().skip(1) {
+                        let theirs = other.shape.properties();
+                        kinds.retain(|k| theirs.contains(k));
+                    }
+                    Cow::Owned(kinds)
                 }
-                return (first.style.clone(), kinds, true);
-            }
+            };
+            return (Cow::Borrowed(&first.style), kinds, true);
         }
-        (
-            self.tool_style(self.tool),
-            self.tool.properties().to_vec(),
-            false,
-        )
+        match self.styles.get(&self.tool) {
+            Some(style) => (
+                Cow::Borrowed(style),
+                Cow::Borrowed(self.tool.properties()),
+                false,
+            ),
+            None => (
+                Cow::Owned(self.tool.default_style()),
+                Cow::Borrowed(self.tool.properties()),
+                false,
+            ),
+        }
     }
 
     /// Turn a property-bar change into a command, merging the changes of one widget interaction.
@@ -1104,14 +1123,16 @@ impl Editor {
         if !ctx.memory(|m| m.has_focus(id)) {
             return Vec::new();
         }
-        let events = ctx.input(|i| i.events.clone());
-        if session.input(&mut e.doc, &events) {
+        // Feed the events straight from the input lock, without cloning the whole list per frame.
+        let (finish, had_events) =
+            ctx.input(|i| (session.input(&mut e.doc, &i.events), !i.events.is_empty()));
+        if finish {
             self.finish_text();
             ctx.memory_mut(|m| m.surrender_focus(id));
             ctx.request_repaint();
             return Vec::new();
         }
-        if !events.is_empty() {
+        if had_events {
             ctx.request_repaint();
         }
         let Some(annotation) = e.doc.annotation(session.id()) else {
