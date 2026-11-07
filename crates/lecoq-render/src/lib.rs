@@ -53,13 +53,19 @@ impl std::fmt::Debug for Composite {
 
 /// The Skia renderer. Creating one is what "initialising Skia" means for lecoq.
 pub struct Renderer {
-    /// The last source, converted to a Skia image.
-    source: Option<(u64, sk::Image)>,
+    /// The converted Skia sources, most-recently-used first, at most two. Two slots are kept so
+    /// zooming back and forth across the display density — which alternates the source key between
+    /// the display-size and the full-resolution pixels — does not reconvert the full-resolution
+    /// buffer on each flip (#66). Each entry is keyed by [`Source::key`], exactly as the one slot
+    /// was.
+    sources: Vec<(u64, sk::Image)>,
 }
 
 impl Renderer {
     pub fn new() -> Self {
-        Self { source: None }
+        Self {
+            sources: Vec::new(),
+        }
     }
 
     /// The Image plus every Annotation of `doc`, for `view`, in a freshly allocated buffer. This is
@@ -128,14 +134,15 @@ impl Renderer {
     }
 
     fn source_image(&mut self, source: &Source<'_>) -> &sk::Image {
-        if self
-            .source
-            .as_ref()
-            .is_none_or(|(key, _)| *key != source.key)
-        {
-            self.source = Some((source.key, to_skia(source.pixels)));
+        if let Some(pos) = self.sources.iter().position(|(key, _)| *key == source.key) {
+            // Keep the hit as most-recently-used, so the other slot survives the next flip.
+            self.sources[..=pos].rotate_right(1);
+        } else {
+            // Miss: convert, put it in front, and drop the least-recently-used beyond the two slots.
+            self.sources.insert(0, (source.key, to_skia(source.pixels)));
+            self.sources.truncate(2);
         }
-        &self.source.as_ref().expect("just set").1
+        &self.sources[0].1
     }
 }
 
@@ -369,5 +376,63 @@ mod tests {
             fresh.rgba_premultiplied, buffer,
             "a reused buffer rendered with fresh = false must leave no stale pixels"
         );
+    }
+
+    /// A second source with a different gradient, so returning the wrong cached slot would show as
+    /// wrong pixels.
+    fn other_source() -> Pixels {
+        let (w, h) = (48u32, 32u32);
+        let mut data = Vec::with_capacity((w * h * 3) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                data.push(200u8.wrapping_sub((x * 5) as u8));
+                data.push(16);
+                data.push((y * 3) as u8);
+            }
+        }
+        Pixels {
+            width: w,
+            height: h,
+            data: PixelData::Rgb(data),
+        }
+    }
+
+    #[test]
+    fn alternating_two_source_keys_keeps_both_converted_and_renders_each_correctly() {
+        let doc = doc_with_shadowed_rectangle();
+        let view = whole_view();
+        let display = source();
+        let full = other_source();
+        // The app's keys: display-size decodes are even, full-resolution ones are odd.
+        let display_src = Source {
+            key: 4,
+            pixels: &display,
+        };
+        let full_src = Source {
+            key: 3,
+            pixels: &full,
+        };
+
+        // What each source must look like on its own.
+        let want_display = Renderer::new().composite(&doc, &display_src, view);
+        let want_full = Renderer::new().composite(&doc, &full_src, view);
+
+        let mut renderer = Renderer::new();
+        // Flip back and forth across the display density several times.
+        for _ in 0..3 {
+            let got_display = renderer.composite(&doc, &display_src, view);
+            assert_eq!(
+                got_display.rgba_premultiplied,
+                want_display.rgba_premultiplied
+            );
+            let got_full = renderer.composite(&doc, &full_src, view);
+            assert_eq!(got_full.rgba_premultiplied, want_full.rgba_premultiplied);
+        }
+
+        // Both sources stay converted: the flips never evict each other (so, in the app, the
+        // full-resolution buffer is not reconverted on every flip — the point of the two slots).
+        assert_eq!(renderer.sources.len(), 2);
+        assert!(renderer.sources.iter().any(|(k, _)| *k == 4));
+        assert!(renderer.sources.iter().any(|(k, _)| *k == 3));
     }
 }
