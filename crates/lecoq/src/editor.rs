@@ -17,7 +17,8 @@ use lecoq_core::{
 };
 use lecoq_render::{Composite, Renderer, Source, View};
 
-use crate::decode::PendingFullDecode;
+use crate::app::job::{self, Job};
+use crate::decode::{self, FullDecodeResult};
 use crate::tools::select::End;
 use crate::tools::text::{TextSession, text_at};
 use crate::tools::{Pointer, Tool, ToolContext, ToolId, select};
@@ -59,7 +60,7 @@ struct Edited {
     /// The file the Image came from; `None` for a clipboard image not saved yet (§3.5).
     path: Option<PathBuf>,
     view_only: bool,
-    full_decode: Option<PendingFullDecode>,
+    full_decode: Option<Job<FullDecodeResult>>,
     /// Which open this is: a save finishing after another Image was opened leaves it alone.
     generation: u64,
     /// Image operations chosen before the full-resolution pixels arrived: done when they do.
@@ -119,6 +120,9 @@ pub struct Editor {
     rubber_band: Option<egui::Rect>,
     /// How many Images have been opened (each one's [`Edited::generation`]).
     opened: u64,
+    /// The UI context whose repaint the full-resolution decode wakes when it lands; set by the app
+    /// once the window exists. `None` in editor-only tests, which step frames and poll directly.
+    waker: Option<egui::Context>,
 }
 
 /// What a save (#34) needs from the editor when it starts.
@@ -173,7 +177,14 @@ impl Editor {
             crop: None,
             history_pixel_cap: HISTORY_PIXEL_CAP,
             rubber_band: None,
+            waker: None,
         }
+    }
+
+    /// Give the editor the UI context the full-resolution decode wakes when it finishes. The app
+    /// sets it once the window exists, so the decode needs no per-frame waker re-registration.
+    pub fn set_waker(&mut self, ctx: egui::Context) {
+        self.waker = Some(ctx);
     }
 
     /// Change the History's pixel cap for the Documents opened from now on (tests lower it).
@@ -636,6 +647,7 @@ impl Editor {
 
     /// §4.7: the first tool use starts the full-resolution decode, in the background.
     fn start_full_decode(&mut self) {
+        let waker = self.waker.as_ref().map(job::waker);
         let Some(e) = &mut self.edited else {
             return;
         };
@@ -643,7 +655,7 @@ impl Editor {
             return;
         }
         if let Some(path) = &e.path {
-            e.full_decode = Some(PendingFullDecode::spawn_full(path.clone()));
+            e.full_decode = Some(decode::spawn_full(path.clone(), waker));
         }
     }
 
@@ -661,19 +673,19 @@ impl Editor {
         let Some(e) = &mut self.edited else {
             return;
         };
-        let Some(pending) = &e.full_decode else {
+        let Some(pending) = &mut e.full_decode else {
             return;
         };
-        pending.wake(ctx);
-        if let Some(result) = pending.take() {
-            e.full_decode = None;
-            // A failed full decode leaves editing on the display pixels; Flatten (#34) reports it.
-            if let Ok(pixels) = result {
-                e.doc.set_full_resolution(Arc::new(pixels));
-            }
-            for op in std::mem::take(&mut e.queued) {
-                op.apply(&mut e.doc);
-            }
+        let Some(result) = pending.poll() else {
+            return;
+        };
+        e.full_decode = None;
+        // A failed full decode leaves editing on the display pixels; Flatten (#34) reports it.
+        if let Ok(pixels) = result {
+            e.doc.set_full_resolution(Arc::new(pixels));
+        }
+        for op in std::mem::take(&mut e.queued) {
+            op.apply(&mut e.doc);
         }
     }
 
