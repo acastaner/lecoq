@@ -1840,7 +1840,7 @@ dependencies = [
 
 [[package]]
 name = "lecoq"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "eframe",
  "egui",
@@ -1858,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "lecoq-codec"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "fast_image_resize",
  "image",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "lecoq-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1879,7 +1879,7 @@ dependencies = [
 
 [[package]]
 name = "lecoq-platform"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "clipboard-rs",
  "directories",
@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "lecoq-render"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "epaint_default_fonts",
  "lecoq-core",
@@ -1906,7 +1906,7 @@ dependencies = [
 
 [[package]]
 name = "lecoq-siblings"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "icu_collator",
  "icu_locale_core",
