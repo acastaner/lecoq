@@ -1838,6 +1838,7 @@ impl eframe::App for LecoqApp {
                 self.execute(command);
             }
         }
+        self.show_prompt_modals(&ctx);
         self.poll_open_dialog();
         self.poll_folder_dialog();
         self.poll_save_dialog();
@@ -1918,7 +1919,7 @@ impl eframe::App for LecoqApp {
         ));
         self.view = view;
         self.show_context_menu(&ctx, &menu);
-        self.show_modal(&ctx);
+        self.show_dialog_modals(&ctx);
         self.start_animation(&ctx);
         self.request_pixels(&ctx);
 

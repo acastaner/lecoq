@@ -123,22 +123,43 @@ impl LecoqApp {
 
     /// Lay out whichever modal is up and act on how it ended. Esc is every dialog's Cancel (§6.4);
     /// the layout itself consumes it, so the window's own shortcuts never see it meanwhile.
-    pub(super) fn show_modal(&mut self, ctx: &egui::Context) {
-        // Phase one: lay the modal out (a stateful dialog mutates in place) and read its outcome,
-        // holding only the borrow of `self.modal`. Phase two routes, which needs the rest of `self`.
+    /// The prompts that can be raised by a background poll or an input command (unsaved changes,
+    /// the overwrite prompt, the Copy to / Move to warning). Shown early in the frame — before the
+    /// `poll_*` block — exactly where each used to be laid out, so their resolution still happens
+    /// before `poll_after_save` reads [`Self::overwrite_prompt_up`]/[`Self::file_op_warning_up`].
+    pub(super) fn show_prompt_modals(&mut self, ctx: &egui::Context) {
+        // Phase one: lay the modal out and read its outcome, holding only the borrow of
+        // `self.modal`. Phase two routes (via `apply_modal_act`), which needs the rest of `self`.
         let act = match &mut self.modal {
-            None => Act::Nothing,
             Some(Modal::Unsaved(p)) => match unsaved_dialog::show(ctx, &p.file_name) {
                 Some(answer) => Act::Unsaved(answer),
                 None => Act::Nothing,
             },
+            Some(Modal::Overwrite(p)) => match overwrite_dialog::show(ctx, &p.file_name) {
+                Some(answer) => Act::Overwrite(answer),
+                None => Act::Nothing,
+            },
+            Some(Modal::FileOpWarning(body)) => {
+                if file_op_warning::show(ctx, body) {
+                    Act::Close
+                } else {
+                    Act::Nothing
+                }
+            }
+            // The menu-raised dialogs are shown late, in `show_dialog_modals`.
+            Some(Modal::Resize(_) | Modal::Help(_)) | None => Act::Nothing,
+        };
+        self.apply_modal_act(act);
+    }
+
+    /// The dialogs raised from the menus (Resize, Help). Shown late in the frame — after the canvas
+    /// and the menu bar — exactly where each used to be, so a dialog opened by a menu click this
+    /// frame is laid out the same frame.
+    pub(super) fn show_dialog_modals(&mut self, ctx: &egui::Context) {
+        let act = match &mut self.modal {
             Some(Modal::Resize(dialog)) => match dialog.show(ctx) {
                 Some(resize_dialog::Outcome::Cancel) => Act::ResizeCancel,
                 Some(resize_dialog::Outcome::Resize(size)) => Act::Resize(size),
-                None => Act::Nothing,
-            },
-            Some(Modal::Overwrite(p)) => match overwrite_dialog::show(ctx, &p.file_name) {
-                Some(answer) => Act::Overwrite(answer),
                 None => Act::Nothing,
             },
             Some(Modal::Help(dialog)) => {
@@ -148,15 +169,16 @@ impl LecoqApp {
                     Act::Nothing
                 }
             }
-            Some(Modal::FileOpWarning(body)) => {
-                if file_op_warning::show(ctx, body) {
-                    Act::Close
-                } else {
-                    Act::Nothing
-                }
+            Some(Modal::Unsaved(_) | Modal::Overwrite(_) | Modal::FileOpWarning(_)) | None => {
+                Act::Nothing
             }
         };
+        self.apply_modal_act(act);
+    }
 
+    /// Route a modal's resolved outcome. Split from the layout above so the borrow of `self.modal`
+    /// is released first: routing (proceed, save, execute) touches the rest of `self`.
+    fn apply_modal_act(&mut self, act: Act) {
         match act {
             Act::Nothing => {}
             Act::Close | Act::ResizeCancel => self.modal = None,

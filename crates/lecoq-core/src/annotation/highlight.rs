@@ -54,3 +54,31 @@ impl Shape for Highlight {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn region() -> Highlight {
+        Highlight::new(Rect::from_corners(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 50.0),
+        ))
+    }
+
+    #[test]
+    fn a_region_is_hit_anywhere_inside_and_misses_outside() {
+        let h = region();
+        let style = Style::default();
+        assert!(h.hit(Point::new(50.0, 25.0), &style, 0.0), "the middle");
+        assert!(!h.hit(Point::new(120.0, 25.0), &style, 0.0), "outside");
+    }
+
+    #[test]
+    fn tolerance_widens_the_region() {
+        let h = region();
+        let p = Point::new(103.0, 25.0);
+        assert!(!h.hit(p, &Style::default(), 0.0));
+        assert!(h.hit(p, &Style::default(), 5.0));
+    }
+}

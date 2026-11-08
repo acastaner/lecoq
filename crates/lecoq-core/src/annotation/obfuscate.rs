@@ -50,3 +50,31 @@ impl Shape for Obfuscate {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn region() -> Obfuscate {
+        Obfuscate::new(Rect::from_corners(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 50.0),
+        ))
+    }
+
+    #[test]
+    fn a_region_is_hit_anywhere_inside_and_misses_outside() {
+        let o = region();
+        let style = Style::default();
+        assert!(o.hit(Point::new(50.0, 25.0), &style, 0.0), "the middle");
+        assert!(!o.hit(Point::new(120.0, 25.0), &style, 0.0), "outside");
+    }
+
+    #[test]
+    fn tolerance_widens_the_region() {
+        let o = region();
+        let p = Point::new(103.0, 25.0);
+        assert!(!o.hit(p, &Style::default(), 0.0));
+        assert!(o.hit(p, &Style::default(), 5.0));
+    }
+}
